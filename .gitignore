@@ -1,0 +1,19 @@
+# deps & builds
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+
+# local data
+minio-data/
+postgres-data/

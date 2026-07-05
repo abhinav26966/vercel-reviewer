@@ -1,0 +1,8 @@
+dist
+.next
+.turbo
+node_modules
+pnpm-lock.yaml
+drizzle
+docs
+CLAUDE.md
