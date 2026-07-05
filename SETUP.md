@@ -6,48 +6,63 @@ locally without them.
 
 ## Pending
 
-### 1. GitHub repository (needed before Phase 1)
+### 4. GitHub App (needed for Phase 1 live testing)
 
-- [ ] Create a GitHub repo (e.g. `flowguard`) and push this monorepo to it:
+Create the app that receives webhooks and posts PR comments:
+
+- [ ] Go to https://smee.io/new and copy your channel URL (webhook proxy for local dev).
+- [ ] Go to https://github.com/settings/apps/new and create an app:
+  - **Name:** `flowguard-dev-<yourname>` (must be globally unique)
+  - **Homepage URL:** anything (e.g. the repo URL)
+  - **Webhook URL:** your smee channel URL
+  - **Webhook secret:** generate one (`openssl rand -hex 24`) and save it
+  - **Repository permissions:**
+    - Checks: **Read & write**
+    - Commit statuses: **Read & write**
+    - Contents: **Read-only**
+    - Deployments: **Read-only**
+    - Issues: **Read & write**
+    - Pull requests: **Read & write**
+    - Metadata: Read-only (forced)
+  - **Subscribe to events:** Pull request, Deployment status, Push, Issue comment
+- [ ] After creating: note the **App ID**, then **Generate a private key** (downloads a `.pem`).
+- [ ] **Install the app** on your account, selecting the monorepo from step 1.
+- [ ] Create `apps/api/.env` (see `apps/api/.env.example`):
   ```sh
-  git remote add origin git@github.com:<you>/flowguard.git
-  git push -u origin main
+  GITHUB_APP_ID=<app id>
+  GITHUB_APP_PRIVATE_KEY_BASE64=$(base64 -i ~/Downloads/<downloaded>.pem)
+  GITHUB_WEBHOOK_SECRET=<the webhook secret>
+  FLOWGUARD_MASTER_KEY=$(openssl rand -hex 32)
+  SMEE_URL=<your smee channel URL>
   ```
-  PRs against this repo double as demo-app PRs in later phases (the Vercel project
-  below builds `examples/demo-app` from it).
 
-### 2. Vercel project for the demo app (Phase 0 AC: "demo-app runs on Vercel")
+### 5. Vercel access token + bypass secret (needed for Phase 1 seed)
 
-- [ ] In Vercel: **Add New → Project**, import the GitHub repo from step 1.
-- [ ] Set **Root Directory** to `examples/demo-app` (framework: Next.js autodetects;
-      pnpm workspace is detected from the repo-root lockfile).
-- [ ] Environment variables (Project → Settings → Environment Variables):
-  - `SESSION_SECRET` — any long random string (e.g. `openssl rand -hex 32`)
-  - `MOCK_PAYMENTS` = `1` (until Stripe is configured)
-  - `DEMO_PASSWORD` — optional; defaults to `demo1234`
-- [ ] Deploy, then verify manually on the production URL:
-  login `default@demo.dev` / `demo1234` → buy → inventory → open;
-  chaos flags `/shop?slow=1`, `/open?break=rip`, `/inventory?blank=1`.
-- [ ] Note the Vercel **project ID** and **team ID** (Settings → General) — Phase 1
-      needs them for the repo↔project binding.
+- [ ] Vercel → Account Settings → **Tokens** → create a token (scope: your team/account).
+- [ ] Vercel → the demo project → Settings → **Deployment Protection** →
+      **Protection Bypass for Automation** → generate, copy the secret.
+      (If deployment protection is disabled the bypass secret is optional — still fine to create.)
+- [ ] Run the seed script to bind repo ↔ Vercel project (exact command is printed in
+      PROGRESS.md once you get here; it needs the project ID + team ID from the
+      Vercel project settings).
 
-### 3. Stripe test keys (not needed until Phase 11, but cheap to do now)
+### 6. Preview-environment payments (recommended before Phase 2)
 
-- [ ] Create/reuse a Stripe account → Developers → API keys → **test mode**.
-- [ ] Put `STRIPE_SECRET_KEY` (`sk_test_…`) in the Vercel project env (and in
-      `examples/demo-app/.env.local` if you want real Checkout locally), and set
-      `MOCK_PAYMENTS=0`.
-- Test cards: `4242 4242 4242 4242` (card), `4000 0027 6000 3155` (3DS challenge).
-
-### 4. Coming in Phase 1 (listed for visibility, don't do yet)
-
-- GitHub App creation (webhook secret, private key, permissions per doc 06 §1).
-- Vercel access token + **Protection Bypass for Automation** secret for the
-  demo project (Vercel → Project → Settings → Deployment Protection).
+- [ ] In the Vercel project env vars, override `MOCK_PAYMENTS=1` for the **Preview**
+      environment only (keep `0` in Production). Until Phase 11 lands the typed
+      Stripe payment step, replay flows on previews can't complete hosted Stripe
+      Checkout — mock mode keeps buy/rip flows runnable on preview URLs.
 
 ## Done
 
-- (nothing yet)
+- [x] **1. GitHub repository** — created and pushed (2026-07-05).
+- [x] **2. Vercel project for the demo app** — `vercel-reviewer-demo-app.vercel.app`,
+      env vars set, verified end-to-end incl. chaos flags (2026-07-05).
+      Still needed from its settings: **project ID + team ID** for item 5.
+- [x] **3. Stripe test keys** — `sk_test_…` live on the deployment with
+      `MOCK_PAYMENTS=0`; full hosted-checkout purchase verified with the 4242 card
+      (2026-07-05). Test cards: `4242 4242 4242 4242` (card),
+      `4000 0027 6000 3155` (3DS challenge).
 
 ## Local development (no external resources needed)
 

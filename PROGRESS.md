@@ -2,61 +2,86 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 0 — Foundation & demo target** (code complete; awaiting founder-side Vercel deploy)
+## Current phase: **Phase 1 — Webhook plumbing** (code complete; live AC needs GitHub App — SETUP.md items 4–5)
 
-## Phase 0 task status
+## Phase 0 — ✅ COMPLETE (2026-07-05)
 
-| Task | Status |
-|---|---|
-| 1. Monorepo scaffold (pnpm + Turborepo, TS strict, ESLint 9 flat, Prettier, Vitest, CI workflow) | ✅ |
-| 2. `packages/schemas` — Zod for RecordingTrace, FlowSpec, RunFlowResult, ExecuteFlowJob, ConfigBundle, Verdict (+ JudgeOutput, ProjectSettings); fixture round-trip tests | ✅ 23 tests |
-| 3. `packages/db` — Drizzle schema (all 20 doc-08 tables), generated migration, docker-compose (Postgres 5433 / Redis / MinIO) | ✅ migration applied to real PG |
-| 4. `packages/shared` — prefixed-nanoid ids, typed errors, pino logger + RedactionRegistry (registry functional; artifact/HAR/prompt sink wiring lands Phases 4/6) | ✅ 8 tests |
-| 5. `examples/demo-app` — login, shop+Stripe/mock, inventory, r3f pack-rip canvas, `window.__flowState`, chaos flags | ✅ locally; ⏳ Vercel deploy (SETUP.md #2) |
-
-## Phase 0 acceptance criteria
+All acceptance criteria verified:
 
 | AC | Evidence |
 |---|---|
-| `pnpm build && pnpm test` green | 4/4 build tasks; 37 tests passing (schemas 23, shared 8, db 2, demo-app 4); lint + typecheck green |
-| demo-app runs locally | verified: login → buy → inventory → open, via curl AND headless Chromium (Playwright) |
-| demo-app runs on Vercel | ⏳ **founder action — SETUP.md item 2** |
-| chaos flags verified | `?slow=1`: buy 0.47s → 1.81s; `?break=rip`: POST /api/packs/open → 500, DOM error shown, `__flowState` stays `{packOpened:false, cardsRevealed:0}`; `?blank=1`: `<main></main>`, zero pack-cards |
-| canvas + state SDK | headless click on canvas center → rip animation → 5 card meshes; `window.__flowState` ended `{packOpened:true, cardsRevealed:5}` (screenshots in session scratchpad) |
+| `pnpm build && pnpm test` green | clean rebuild green; lint + typecheck green |
+| demo-app runs locally | login → buy → inventory → open verified via curl + headless Chromium |
+| demo-app runs on Vercel | `vercel-reviewer-demo-app.vercel.app` — login, **real Stripe test-mode Checkout completed with 4242 card**, canvas rip → `{packOpened:true, cardsRevealed:5}` on prod |
+| chaos flags | prod: `?slow=1` buy 1.07s→2.82s; `?break=rip` → 500; `?blank=1` → `<main></main>` |
 
-## Deviations from docs (all documented in the docs themselves, same commit)
+## Phase 1 task status
 
-- doc 02 §1: nullability clarifications for trace fields (`target` null on navigation events, throttled screenshots null, `newTab`).
-- doc 04 §1: payment `cvc` plaintext → `cvcRef` secret reference (aligns with doc 07 §4 / doc 08); `ExecuteFlowJob` embeds the full `spec` (stateless runners).
-- Local Postgres mapped to host port **5433** (native Postgres already owns 5432 on the founder's machine).
+| Task | Status |
+|---|---|
+| 1. `apps/api` Fastify + `/webhooks/github` (raw-body HMAC verify, 401 on bad sig), delivery-id idempotency, handlers for `installation*`/`pull_request`/`deployment_status`/`issue_comment` | ✅ code + 19 tests |
+| 2. `packages/vercel` deployments client (get by id/url, list by project+sha, project-binding check) | ✅ + 4 tests |
+| 3. Project setup via script (`pnpm --filter @flowguard/api seed:project`), org/project rows, repo↔Vercel binding, encrypted token/bypass storage | ✅ (needs SETUP #5 inputs) |
+| 4. deployment_status success → PR resolution → runs row (planning) → sticky comment (marker find-or-create, edit-in-place) → commit status | ✅ code + tests |
+| 5. Base-branch deployment → base run row | ✅ code + tests |
+| 6. PR closed → cancel runs; `/flowguard rerun` parsing | ✅ code + tests (execution wired in Phase 3) |
+
+Also landed: `packages/github` (App auth, webhook verify, sticky-comment upsert, commit
+status, comment renderer); envelope encryption in `packages/shared` (local master key,
+KMS slot-in later); `webhook_deliveries` table (doc 08 updated in same commit).
+
+## Phase 1 AC — ⏳ awaiting live test
+
+> Open a PR on the demo repo → within seconds of Vercel finishing, exactly ONE comment
+> with the correct preview URL; edits in place on second push. Base merge creates a
+> base run row.
+
+Comment/run/idempotency mechanics are unit-tested (edit-in-place, duplicate-delivery
+skip, awaiting-run upgrade, multi-project filter). Live path needs founder actions:
+
+1. **SETUP.md item 4**: smee channel + GitHub App (permissions/events listed there) + install on repo + `apps/api/.env`.
+2. **SETUP.md item 5**: Vercel token + bypass secret.
+3. Then:
+   ```sh
+   pnpm db:up && pnpm --filter @flowguard/db migrate
+   pnpm --filter @flowguard/api dev            # terminal 1
+   pnpm --filter @flowguard/api dev:webhooks   # terminal 2 (needs SMEE_URL in env)
+   # install the GitHub App now (installation webhook lands) then:
+   pnpm --filter @flowguard/api seed:project -- --repo <owner>/<repo> \
+     --vercel-project <prj_...> --vercel-team <team_...> \
+     --vercel-token <token> --bypass-secret <secret>
+   # open a test PR touching examples/demo-app → watch the comment appear
+   ```
+
+## Deviations from docs (documented in-doc, same commit)
+
+- doc 02 §1: trace-field nullability clarifications.
+- doc 04 §1: `cvc` → `cvcRef`; `ExecuteFlowJob` embeds `spec`.
+- doc 08: added `webhook_deliveries` (delivery-id idempotency ledger).
+- GitHub App permissions beyond doc 06 §1 list: + Commit statuses RW (Phase 1 uses
+  statuses API), + Issues RW (PR comments go through the issues API).
+- Local Postgres on host port **5433** (native PG owns 5432 on founder's machine).
 
 ## Implementation notes for future sessions
 
-- Zod is v4 (`.prefault({})` for object defaults, `z.iso.datetime()`, `z.url()`).
-- Pinned majors: TS 5.9.3, ESLint 9, Next 15.5, Vitest 4, React 19, Turbo 2, Drizzle 0.45.
-- Demo-app state lives in the signed session cookie (no DB → works on Vercel serverless).
-  **Phase 11 will need server-side state** for webhook-attribution testing (a webhook
-  can't update a cookie) — planned: swap pack storage to Vercel KV/Upstash then.
-- Demo-app testids: `email-input`, `password-input`, `login-submit`, `login-error`,
-  `buy-pack-btn`, `purchase-complete`, `owned-packs`, `pack-card`, `inventory-empty`,
-  `pack-canvas` (on the real `<canvas>`), `packs-remaining`, `no-packs`, `open-error`,
-  `session-email`, `logout-btn`.
-- puppeteer-core + system Chrome 140+ has an input-delivery bug after redirects; use
-  Playwright for any browser automation (it's the runtime anyway).
+- Zod v4 (`.prefault({})`, `z.iso.datetime()`, `z.url()`); TS 5.9.3, ESLint 9, Next 15.5, Vitest 4, Fastify 5, octokit 5.
+- apps/api handlers take a `Store` interface (`src/store.ts`); tests use `test/fakes.ts`
+  in-memory store — keep new handlers testable the same way.
+- Webhook route ALWAYS 2xx after signature+idempotency (GitHub retries would replay
+  side effects); handler errors are logged, not thrown.
+- Vercel sets `deployment.ref` to the branch name — base-run detection keys off it.
+- Demo-app cookie-state → Phase 11 needs server-side state (Vercel KV) for webhook AC.
+- puppeteer-core + system Chrome is broken for input after redirects — use Playwright.
+- Suggest `MOCK_PAYMENTS=1` on Vercel **Preview** env before Phase 2 (SETUP #6) so
+  buy/rip flows run on previews before the Phase 11 payment step exists.
 
 ## Open questions for the founder
 
-- None blocking. Phase 1 starts when the GitHub repo + Vercel project exist
-  (SETUP.md items 1–2) — GitHub App creation will be walked through step-by-step then.
-
-## Pending SETUP.md items
-
-1. Create GitHub repo + push (SETUP.md #1)
-2. Vercel project for demo-app + env vars + manual chaos-flag check on prod URL (SETUP.md #2)
-3. Stripe test keys (optional until Phase 11) (SETUP.md #3)
+- None blocking. Phase 1 live AC needs SETUP.md items 4–5.
 
 ## Next session
 
-- If SETUP.md #1–2 done → verify demo-app on Vercel (final Phase 0 AC), then begin
-  **Phase 1 — Webhook plumbing** (doc 09): Fastify api app, GitHub App webhooks,
-  `packages/vercel`, sticky comment "hello" path.
+- Founder runs SETUP 4–5 → live-test Phase 1 AC (single sticky comment, in-place edit,
+  base run row) → then **Phase 2 — Runner MVP** (doc 09): `apps/runner`, deterministic
+  replay of handwritten login/inventory/rip specs against the real preview, artifacts
+  to MinIO, BullMQ queue.

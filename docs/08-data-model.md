@@ -165,6 +165,11 @@ CREATE TABLE session_states (                   -- storageState cache
   s3_key text NOT NULL, PRIMARY KEY (persona, deployment_id)
 );
 
+CREATE TABLE webhook_deliveries (           -- idempotency ledger (doc 01 §6): insert-first,
+  id text PRIMARY KEY,                      -- X-GitHub-Delivery GUID; conflict ⇒ already processed
+  event text NOT NULL, action text
+);
+
 CREATE TABLE alerts (
   id text PRIMARY KEY, project_id text REFERENCES projects,
   kind text NOT NULL,                           -- 'base_broken'|'baseline_conflict'|'stuck_run'|...

@@ -26,6 +26,7 @@ const DOC_08_TABLES = [
   "base_result_cache",
   "verdicts",
   "session_states",
+  "webhook_deliveries",
   "alerts",
 ];
 

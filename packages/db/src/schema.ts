@@ -377,6 +377,18 @@ export const sessionStates = pgTable(
   (t) => [primaryKey({ columns: [t.persona, t.deploymentId] })],
 );
 
+/**
+ * Webhook idempotency: every handler is idempotent keyed on delivery ID
+ * (doc 01 §6). Insert-first; a conflict means the delivery was already processed.
+ */
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  /** the X-GitHub-Delivery GUID */
+  id: text("id").primaryKey(),
+  event: text("event").notNull(),
+  action: text("action"),
+  ...timestamps,
+});
+
 export const alerts = pgTable("alerts", {
   id: text("id").primaryKey(),
   projectId: text("project_id").references(() => projects.id),
