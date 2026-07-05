@@ -2,15 +2,16 @@
 
 ## 1. Job contract
 
-A runner process receives one `ExecuteFlowJob`:
+A runner process receives one `ExecuteFlowJob` (the job also embeds the full `spec` — runners are stateless and never read the DB, per doc 01 §1):
 
 ```jsonc
 {
   "runId": "run_x", "flowId": "flw_9f2c", "specVersionId": "fsv_12",
+  "spec": { /* full Flow Spec, doc 02 §2 */ },
   "target": { "kind": "head", "deploymentUrl": "https://app-git-feat-x.vercel.app", "bypassSecret": "…", "sha": "def456" },
   "configBundle": {                       // resolved by orchestrator per TARGET (doc 07 §3)
     "persona": { "name": "premium_user", "usernameRef": "sec_1", "passwordRef": "sec_2", "storageStateKey": "ss/prj_a1/premium_user/dep_123.json" },
-    "payment": { "provider": "stripe", "cardRef": "sec_9", "expiry": "12/34", "cvc": "123", "source": "project" },
+    "payment": { "provider": "stripe", "cardRef": "sec_9", "expiry": "12/34", "cvcRef": "sec_10", "source": "project" },
     "dataBranchDiffers": true             // head uses a different DB than base → passed to judge
   },
   "mode": "measure",                      // warmup | measure | validate | explore
