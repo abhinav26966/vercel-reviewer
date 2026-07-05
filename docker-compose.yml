@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: flowguard
       POSTGRES_DB: flowguard
     ports:
-      - "5432:5432"
+      # host 5433: leaves any natively-installed Postgres on 5432 untouched
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

@@ -1,0 +1,132 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    sans-serif;
+  background: #0d1117;
+  color: #e6edf3;
+  min-height: 100vh;
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.9rem 1.5rem;
+  border-bottom: 1px solid #21262d;
+}
+
+nav a {
+  color: #9ecbff;
+  text-decoration: none;
+}
+
+nav .spacer {
+  flex: 1;
+}
+
+nav .who {
+  color: #8b949e;
+  font-size: 0.85rem;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+h1 {
+  margin-bottom: 1rem;
+}
+
+p {
+  margin-bottom: 0.75rem;
+  line-height: 1.5;
+}
+
+button,
+.btn {
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem 1.1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button:hover,
+.btn:hover {
+  background: #2ea043;
+}
+
+input {
+  background: #010409;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  width: 100%;
+}
+
+form.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 320px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.card {
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1.25rem;
+  background: #161b22;
+}
+
+.pack-tile {
+  border: 1px solid #6e5494;
+  border-radius: 8px;
+  padding: 1.5rem 1rem;
+  background: linear-gradient(160deg, #1d2230, #2b2350);
+  text-align: center;
+}
+
+.error {
+  color: #ff7b72;
+  margin-top: 0.75rem;
+}
+
+.muted {
+  color: #8b949e;
+}
+
+.canvas-wrap {
+  width: 720px;
+  max-width: 100%;
+  height: 480px;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 1rem;
+  background: #05070c;
+}
