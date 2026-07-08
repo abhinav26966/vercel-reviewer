@@ -25,7 +25,7 @@ export default async function ShopPage({
       <div className="grid" id="shop-grid">
         <div className="pack-tile">
           <h3>Starter Pack</h3>
-          <p className="muted">5 random cards inside</p>
+          <p className="muted">5 random cards in every pack</p>
           <p>$1.99</p>
           <form action={buyAction} method="POST">
             <button type="submit" data-testid="buy-pack-btn">

@@ -259,9 +259,13 @@ export class FakeStore implements Store {
     this.verdicts.push(input);
   }
 
-  async listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]> {
+  async listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]> {
     const open = ["awaiting_deployment", "planning", "resolving_base", "executing", "judging", "reporting"];
-    return this.runs.filter((r) => r.prId === prId && r.id !== excludeRunId && open.includes(r.state));
+    const currentIdx = this.runs.findIndex((r) => r.id === beforeRunId);
+    // array order = creation order in the fake
+    return this.runs.filter(
+      (r, i) => r.prId === prId && r.id !== beforeRunId && i < currentIdx && open.includes(r.state),
+    );
   }
 
   async markSuperseded(runId: string, byRunId: string): Promise<void> {

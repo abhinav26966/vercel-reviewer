@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
   baseResultCache,
@@ -161,8 +161,12 @@ export interface Store {
     humanCopy: string;
     evidence: Record<string, unknown>;
   }): Promise<void>;
-  /** Runs for the same PR still in flight (any non-terminal state), excluding one. */
-  listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]>;
+  /**
+   * In-flight runs for the same PR created BEFORE the given run (a newer
+   * deployment supersedes older runs — never the reverse, even when webhook
+   * events arrive out of order).
+   */
+  listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]>;
   markSuperseded(runId: string, byRunId: string): Promise<void>;
   countRunsForPr(prId: string): Promise<number>;
 }
@@ -554,11 +558,24 @@ export class DrizzleStore implements Store {
     });
   }
 
-  async listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]> {
+  async listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]> {
+    const current = await this.db
+      .select({ createdAt: runs.createdAt })
+      .from(runs)
+      .where(eq(runs.id, beforeRunId))
+      .limit(1);
+    if (!current[0]) return [];
     const rows = await this.db
       .select()
       .from(runs)
-      .where(and(eq(runs.prId, prId), inArray(runs.state, OPEN_RUN_STATES), ne(runs.id, excludeRunId)));
+      .where(
+        and(
+          eq(runs.prId, prId),
+          inArray(runs.state, OPEN_RUN_STATES),
+          ne(runs.id, beforeRunId),
+          lt(runs.createdAt, current[0].createdAt),
+        ),
+      );
     return rows as RunRow[];
   }
 
