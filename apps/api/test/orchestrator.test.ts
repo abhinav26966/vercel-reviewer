@@ -251,7 +251,8 @@ describe("orchestrateRun", () => {
       headResults: { flw_rip: result("head", "passed") },
       baseResults: { flw_rip: result("base", "passed") },
     });
-    h.store.runs.push({
+    // created BEFORE run_1 (array order = creation order in the fake)
+    h.store.runs.unshift({
       id: "run_0",
       projectId: "prj_1",
       kind: "pr",
