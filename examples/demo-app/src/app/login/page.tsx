@@ -33,7 +33,7 @@ export default async function LoginPage({
           Invalid email or password.
         </p>
       ) : null}
-      <p className="muted">Try default@demo.dev / demo1234</p>
+      <p className="muted">Try default@demo.dev (password: see project setup)</p>
     </main>
   );
 }

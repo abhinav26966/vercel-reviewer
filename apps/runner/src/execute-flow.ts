@@ -11,7 +11,7 @@ import { redactHarFile } from "./har-redact.js";
 import { NetworkTracker } from "./network-tracker.js";
 import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
-import { runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
+import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
 export interface ExecuteFlowOptions {
@@ -127,7 +127,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
     const baseUrl = job.target.deploymentUrl.replace(/\/$/, "");
     if (outcome === "passed") {
       try {
-        await page.goto(baseUrl + spec.startPath, { waitUntil: "load", timeout: 30000 });
+        await gotoWithRetry(page, baseUrl + spec.startPath, logger);
       } catch (err) {
         logger.error({ err }, "initial navigation failed");
         outcome = "error";

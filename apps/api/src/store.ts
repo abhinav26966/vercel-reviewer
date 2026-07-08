@@ -176,6 +176,8 @@ export interface Store {
     humanCopy: string;
     evidence: Record<string, unknown>;
   }): Promise<void>;
+  /** Reruns replace a run's verdicts wholesale. */
+  deleteVerdictsForRun(runId: string): Promise<void>;
   /**
    * In-flight runs for the same PR created BEFORE the given run (a newer
    * deployment supersedes older runs — never the reverse, even when webhook
@@ -583,21 +585,41 @@ export class DrizzleStore implements Store {
     result: RunFlowResult;
     fromCache: boolean;
   }): Promise<string> {
-    const id = newId("runFlowResult");
-    await this.db.insert(runFlowResults).values({
-      id,
-      runId: input.runId,
-      flowId: input.flowId,
+    // reruns overwrite their own run's rows (UNIQUE(run, flow, target)); results
+    // from distinct runs stay immutable per doc 08
+    const existing = await this.db
+      .select({ id: runFlowResults.id })
+      .from(runFlowResults)
+      .where(
+        and(
+          eq(runFlowResults.runId, input.runId),
+          eq(runFlowResults.flowId, input.flowId),
+          eq(runFlowResults.target, input.target),
+        ),
+      )
+      .limit(1);
+    const patch = {
       specVersionId: input.specVersionId,
-      target: input.target,
       status: input.result.status,
       failureClass: input.result.failureClass,
       failedStepId: input.result.failedStepId,
       result: input.result,
-      artifacts: input.result.artifacts,
+      artifacts: input.result.artifacts as Record<string, string | null>,
       fromCache: input.fromCache,
-    });
+    };
+    if (existing[0]) {
+      await this.db.update(runFlowResults).set(patch).where(eq(runFlowResults.id, existing[0].id));
+      return existing[0].id;
+    }
+    const id = newId("runFlowResult");
+    await this.db
+      .insert(runFlowResults)
+      .values({ id, runId: input.runId, flowId: input.flowId, target: input.target, ...patch });
     return id;
+  }
+
+  async deleteVerdictsForRun(runId: string): Promise<void> {
+    await this.db.delete(verdicts).where(eq(verdicts.runId, runId));
   }
 
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {

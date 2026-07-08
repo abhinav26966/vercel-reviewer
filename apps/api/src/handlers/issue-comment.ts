@@ -47,23 +47,22 @@ export async function handleIssueComment(
       baseBranch: pr.base.ref,
       state: pr.state,
     });
+    const deployment = await deps.store.getLatestDeploymentForSha(project.id, pr.head.sha);
+    if (!deployment) {
+      deps.logger.warn({ pr: pr.number }, "/flowguard rerun: no deployment known for head sha");
+      return command;
+    }
+    // reuse the existing run for (sha, deployment) via createRun's idempotency; a
+    // rerun resets it to planning and the orchestrator overwrites its results
     const { run } = await deps.store.createRun({
       projectId: project.id,
       kind: "pr",
       state: "planning",
       prId: prRow.id,
       headSha: pr.head.sha,
-      headDeploymentId: null,
+      headDeploymentId: deployment.id,
     });
-    // a rerun of an already-reported run: reset to planning so the orchestrator re-enters
     await deps.store.updateRun(run.id, { state: "planning" });
-    // attach the newest known deployment for this sha, if any
-    const deployment = await deps.store.getLatestDeploymentForSha(project.id, pr.head.sha);
-    if (!deployment) {
-      deps.logger.warn({ pr: pr.number }, "/flowguard rerun: no deployment known for head sha");
-      return command;
-    }
-    await deps.store.updateRun(run.id, { headDeploymentId: deployment.id });
     if (deps.enqueueOrchestration) await deps.enqueueOrchestration(run.id);
     deps.logger.info({ pr: pr.number, run: run.id }, "/flowguard rerun — re-orchestrating");
   } else {

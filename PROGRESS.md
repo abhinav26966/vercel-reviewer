@@ -2,7 +2,53 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 3 — Orchestrated PR runs — ✅ AC PASSED (2026-07-08)**; next up: Phase 4 — Credentials, sessions, redaction
+## Current phase: **Phase 4 — Credentials, sessions, redaction — ✅ AC PASSED (2026-07-08)**; next up: Phase 5 — Recorder extension
+
+### Phase 4 AC evidence (live on PR #3)
+
+1. **storageState auth, login once per target**: worker log shows the Login flow
+   executed once per (persona, deployment), cached to S3 + session_states, and
+   subsequent flows logging "storageState cache hit — login skipped".
+2. **Wrong project password** → Inventory/Rip 🟣 `login failed on this preview:
+   credentials may be wrong, or this PR may use a separate database — provide
+   [PR-scoped credentials](dashboard link), then comment /flowguard rerun`;
+   Login flow ⬜ already_broken_on_base (fails identically on base — honest).
+3. **PR-scoped credentials via dashboard UI** (Playwright-driven form) +
+   `/flowguard rerun` → all ✅ (head resolved PR scope w/ dataBranchDiffers=true,
+   base stayed on project defaults — doc 07 §3 hierarchy per target).
+4. **Byte-scan**: every artifact in MinIO (videos, traces, HARs incl. the login
+   POST body, consoles, storageStates) + api/worker logs — ZERO hits for the
+   password (plain, url-encoded, base64). The scan caught a real pre-Phase-4
+   leak first (see lessons), proving it works.
+5. Bonus: closing PR #3 auto-expired its PR-scoped credential set via the real
+   webhook (expires_at set).
+
+Built: vault resolution in runner only (+ redaction registration before use),
+login-once session manager (no-artifact context), CDP insertText secret typing
+(+ origin guard, tracing disabled for secret specs), HAR post-processor,
+credential CRUD + per-target resolution + secretRefs, synthetic login_failed for
+missing credentials, dashboard v0 (:3100), goto-retry for freshly-READY previews.
+23 new tests (132 total).
+
+### Phase 4 lessons (hard-won)
+
+- **A zombie Phase-3 worker** (pkill pattern missed tsx's real argv) competed on
+  the queue and poisoned half a run with pre-secrets code. Always verify worker
+  process count; runner processes should assert a build/version tag (Phase 13).
+- **Deterministic BullMQ jobIds + retained completed jobs = reruns replay stale
+  results.** enqueueFlowJob now evicts finished jobs squatting on the id.
+- **Rerun must reuse the existing run row** (idempotency index forbids a second
+  run for the same sha+deployment); run_flow_results upsert within the same run.
+- **The scan test caught a real leak**: the demo app printed its own password on
+  the login page ("Try … / demo1234") and a pre-redaction aria snapshot stored
+  it. Hint removed; pre-Phase-4 artifacts purged. Even so, the NEW pipeline
+  redacts page-content secrets from bundles via the registry.
+- **Freshly-READY previews can be unreachable for ~60s** (edge propagation);
+  initial navigation now retries 3× with backoff.
+- The orchestrator bakes storageStateKey at planning; the runner re-checks
+  session_states at execution so login truly runs once per target.
+
+## Phase 3 — Orchestrated PR runs — ✅ AC PASSED (2026-07-08)
 
 ### Phase 3 AC evidence (live on PR #2, abhinav26966/vercel-reviewer)
 
@@ -175,11 +221,10 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 4 — Credentials, sessions, redaction** (doc 09): secrets service CRUD
-  (envelope encryption exists), credential_sets project+PR scope with per-target
-  resolution (head: pr→project; base: project), storageState login-once per
-  (persona, deployment) → S3 → inject, login-failure → 🟣 + PR-scoped-credentials
-  comment path, {{secret:*}} keystroke substitution + origin guard on typing,
-  redaction wired into artifact writers + HAR post-processing (password-grep test),
-  dashboard v0 (project list, credential forms, runs viewer).
-- No new founder resources needed to start.
+- **Phase 5 — Recorder extension + DevTools import** (doc 09): Chrome MV3
+  extension (popup UI, chrome.debugger service worker, content-script event
+  capture w/ locator stacks + canvas coords, CDP screenshots + a11y + network
+  windows, extension-side redaction), trace upload endpoint, DevTools Recorder
+  JSON import. AC: record buy&rip on the demo app; trace validates against the
+  Zod schema; password appears as «redacted:password».
+- No new founder resources needed (recording happens against the deployed demo).

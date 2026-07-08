@@ -247,9 +247,20 @@ export class FakeStore implements Store {
     result: RunFlowResult;
     fromCache: boolean;
   }): Promise<string> {
+    const existing = this.runFlowResults.find(
+      (r) => r.runId === input.runId && r.flowId === input.flowId && r.target === input.target,
+    );
+    if (existing) {
+      Object.assign(existing, input);
+      return existing.id;
+    }
     const id = this.id("rfr");
     this.runFlowResults.push({ id, ...input });
     return id;
+  }
+
+  async deleteVerdictsForRun(runId: string): Promise<void> {
+    this.verdicts = this.verdicts.filter((v) => v.runId !== runId);
   }
 
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {

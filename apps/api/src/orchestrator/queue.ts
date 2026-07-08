@@ -26,6 +26,16 @@ export function createQueues(redisUrl: string, logger: Logger): QueueBundle {
 
   return {
     async enqueueFlowJob(job, jobId) {
+      // deterministic jobIds dedupe within one orchestration, but a RERUN must
+      // execute fresh — evict any finished job squatting on the id (a completed
+      // job would otherwise satisfy awaitFlowResult with stale results)
+      const existing = await runsQueue.getJob(jobId);
+      if (existing) {
+        const state = await existing.getState().catch(() => "unknown");
+        if (state === "completed" || state === "failed") {
+          await existing.remove().catch(() => {});
+        }
+      }
       await runsQueue.add("execute-flow", job, {
         jobId,
         removeOnComplete: { age: 3600 },

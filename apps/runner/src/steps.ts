@@ -139,6 +139,37 @@ async function typeSecretValue(
   }
 }
 
+/**
+ * Freshly-READY Vercel previews can take a few seconds to become reachable at
+ * the edge (deployment_status fires on READY, not on propagation). Retry the
+ * initial navigation with backoff before declaring the deployment unreachable.
+ */
+export async function gotoWithRetry(
+  page: Page,
+  url: string,
+  logger: Logger,
+  opts: { attempts?: number; timeoutMs?: number; backoffMs?: number } = {},
+): Promise<void> {
+  const attempts = opts.attempts ?? 3;
+  const timeoutMs = opts.timeoutMs ?? 25000;
+  const backoffMs = opts.backoffMs ?? 5000;
+  let lastErr: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await page.goto(url, { waitUntil: "load", timeout: timeoutMs });
+      return;
+    } catch (err) {
+      lastErr = err;
+      logger.warn(
+        { url, attempt: i, attempts },
+        "initial navigation attempt failed — deployment may still be propagating",
+      );
+      if (i < attempts) await page.waitForTimeout(backoffMs);
+    }
+  }
+  throw lastErr;
+}
+
 /** Settle strategies networkidle|navigation|timeout (doc 09 Phase 2 scope). */
 async function settle(ctx: StepContext, step: FlowStep, urlBefore: string): Promise<void> {
   const { page, logger } = ctx;

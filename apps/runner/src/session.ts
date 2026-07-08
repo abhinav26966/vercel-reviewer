@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Browser } from "playwright";
 import type { Logger } from "pino";
+import { and, eq } from "drizzle-orm";
 import { createDb } from "@flowguard/db";
 import { sessionStates } from "@flowguard/db";
 import { NetworkTracker } from "./network-tracker.js";
-import { runStepOnce, type SecretLookup } from "./steps.js";
+import { gotoWithRetry, runStepOnce, type SecretLookup } from "./steps.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { ExecuteFlowJob } from "./types.js";
 
@@ -42,14 +43,18 @@ export async function ensureStorageState(
   const workdir = await mkdtemp(path.join(tmpdir(), "flowguard-session-"));
   const statePath = path.join(workdir, "storageState.json");
 
-  if (persona.storageStateKey) {
+  // orchestrator bakes the key at planning time; a parallel/earlier job may have
+  // logged in since — re-check the cache at execution time so login truly runs
+  // ONCE per (persona, deployment), not once per flow (doc 07 §5)
+  const cachedKey = persona.storageStateKey ?? (await lookupSessionKey(deps, persona.name, job));
+  if (cachedKey) {
     try {
-      const data = await deps.artifacts.getBuffer(persona.storageStateKey);
+      const data = await deps.artifacts.getBuffer(cachedKey);
       await writeFile(statePath, data);
-      deps.logger.info({ persona: persona.name, key: persona.storageStateKey }, "storageState cache hit — login skipped");
+      deps.logger.info({ persona: persona.name, key: cachedKey }, "storageState cache hit — login skipped");
       return statePath;
     } catch (err) {
-      deps.logger.warn({ err, key: persona.storageStateKey }, "cached storageState unavailable — logging in fresh");
+      deps.logger.warn({ err, key: cachedKey }, "cached storageState unavailable — logging in fresh");
     }
   }
 
@@ -89,7 +94,7 @@ export async function ensureStorageState(
         await route.continue();
       });
     }
-    await page.goto(baseUrl + persona.loginSpec.startPath, { waitUntil: "load", timeout: 30000 });
+    await gotoWithRetry(page, baseUrl + persona.loginSpec.startPath, deps.logger);
 
     const ctx = { page, baseUrl, tracker, logger: deps.logger, lookupSecret: deps.lookupSecret };
     for (const step of persona.loginSpec.steps) {
@@ -105,6 +110,26 @@ export async function ensureStorageState(
     return statePath;
   } finally {
     await context.close().catch(() => {});
+  }
+}
+
+async function lookupSessionKey(
+  deps: SessionDeps,
+  persona: string,
+  job: ExecuteFlowJob,
+): Promise<string | null> {
+  const deploymentId = job.target.deploymentId;
+  if (!deploymentId || (deps.databaseUrl === undefined && !process.env.DATABASE_URL)) return null;
+  try {
+    const db = createDb(deps.databaseUrl);
+    const rows = await db
+      .select({ s3Key: sessionStates.s3Key })
+      .from(sessionStates)
+      .where(and(eq(sessionStates.persona, persona), eq(sessionStates.deploymentId, deploymentId)))
+      .limit(1);
+    return rows[0]?.s3Key ?? null;
+  } catch {
+    return null;
   }
 }
 

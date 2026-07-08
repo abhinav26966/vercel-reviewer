@@ -259,6 +259,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
 
     // ── judging (stubbed): deterministic comparator → reporting ──
     await store.updateRun(runId, { state: "reporting" });
+    await store.deleteVerdictsForRun(runId); // reruns replace their verdicts
     const rows: FlowReviewRow[] = [];
     const kinds: VerdictKind[] = [];
     for (const o of outcomes) {
