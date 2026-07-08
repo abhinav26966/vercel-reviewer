@@ -2,7 +2,48 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 2 — Runner MVP — ✅ AC PASSED (2026-07-08)**; next up: Phase 3 — Orchestrated PR runs
+## Current phase: **Phase 3 — Orchestrated PR runs — ✅ AC PASSED (2026-07-08)**; next up: Phase 4 — Credentials, sessions, redaction
+
+### Phase 3 AC evidence (live on PR #2, abhinav26966/vercel-reviewer)
+
+- **Regression push** (`b88d1dc`, a real code change 500-ing /api/packs/open):
+  sticky comment showed **Login ✅ 4.6s · Inventory ✅ 3.8s · Buy & Rip 🔴 broken**
+  with `stuck at step s6 "Rip open the pack": text "1" !~ /^0$/ · POST
+  /api/packs/open → 500` + signed [video][trace][screenshot] links; commit status
+  `failure: 1 flow broken: Buy & Rip (DOM-only)`. Compared against merge base
+  `40eecd0`; base ran fresh (cache 0/3).
+- **Fix push** (`b3faa47`): the SAME comment (id 4913215935) flipped to all ✅;
+  **base cache hit 3/3** — head run 14s vs 39s. Status `success: all 3 flows passing`.
+- **Cancellation**: verified live twice — the orphaned `1f981c2` run and a
+  duplicate-deployment run for `b22a8dd` were both `cancelled` with
+  `superseded_by` set + runner abort keys. (With the base cache, runs finish in
+  ~15s — faster than Vercel build skew, so back-to-back pushes usually serialize;
+  the supersede path covers every genuinely-overlapping case.)
+- Artifact links: GET /artifacts HMAC check → 302 presigned MinIO URL; tampered
+  sig → 403.
+- 8 runs total on PR #2; PR closed unmerged (test artifact), branch deleted.
+
+Built: orchestrator state machine (planning → resolving_base → executing →
+reporting), merge-base via compare API, base deployment resolution (exact SHA →
+nearest READY production ancestor), BullMQ fan-out/fan-in with deterministic job
+ids, base_result_cache, pre-LLM comparator, verdict-table renderer, HMAC-signed
+artifact redirect, /flowguard rerun re-orchestration, seed-flows script,
+supersede-with-ordering. 20 new hermetic tests (109 total).
+
+### Phase 3 lessons
+
+- MOCK_PAYMENTS=1 now in Production too (base runs execute buy against prod) —
+  **revert to 0 when Phase 11 lands the typed Stripe step** (SETUP note).
+- Vercel skips prod builds for commits not touching the app root dir (CANCELED
+  state) — base resolution's nearest-ancestor fallback covers it, but a fresh env
+  var needs a commit touching examples/demo-app to take effect.
+- TS control-flow: an unconditional early `return` kills null-narrowing below it —
+  the first regression commit broke the BUILD (pipeline correctly stayed silent:
+  no success event, no run).
+- NEVER `git add -A` on a side branch while main has uncommitted work — it swept
+  api fixes into a test commit (recovered via git checkout <sha> -- paths).
+
+## Phase 2 — Runner MVP — ✅ AC PASSED (2026-07-08)
 
 ### Phase 2 AC evidence (all against the SSO-protected preview `…6u3z7fx9d…`, bypass via vault secret)
 
@@ -134,11 +175,11 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 3 — Orchestrated PR runs + base-vs-head + real comment** (doc 09): run
-  state machine in apps/api (planning → resolving_base → executing → reporting),
-  merge-base resolution via GitHub compare, base deployment lookup via Vercel API
-  (token in vault ✓), per-flow job fan-out to the BullMQ runner, base_result_cache,
-  pre-LLM comparator (head fail + base pass → 🔴; both fail → ⬜; env → 🟣), sticky
-  verdict-table renderer, supersede/cancel on new pushes, seed the handwritten specs
-  as `official` flow versions.
-- No new founder resources needed.
+- **Phase 4 — Credentials, sessions, redaction** (doc 09): secrets service CRUD
+  (envelope encryption exists), credential_sets project+PR scope with per-target
+  resolution (head: pr→project; base: project), storageState login-once per
+  (persona, deployment) → S3 → inject, login-failure → 🟣 + PR-scoped-credentials
+  comment path, {{secret:*}} keystroke substitution + origin guard on typing,
+  redaction wired into artifact writers + HAR post-processing (password-grep test),
+  dashboard v0 (project list, credential forms, runs viewer).
+- No new founder resources needed to start.
