@@ -80,8 +80,13 @@ async function storeSecret(kind: string, plaintext: string): Promise<string> {
 }
 
 const existing = await db.select().from(projects).where(eq(projects.githubRepo, args.repo)).limit(1);
-const tokenRef = args["vercel-token"] ? await storeSecret("token", args["vercel-token"]) : null;
-const bypassRef = args["bypass-secret"] ? await storeSecret("bypass", args["bypass-secret"]) : null;
+// preserve existing secret refs when the corresponding arg is omitted
+const tokenRef = args["vercel-token"]
+  ? await storeSecret("token", args["vercel-token"])
+  : (existing[0]?.vercelTokenRef ?? null);
+const bypassRef = args["bypass-secret"]
+  ? await storeSecret("bypass", args["bypass-secret"])
+  : (existing[0]?.vercelBypassSecretRef ?? null);
 const baseBranches = args["base-branches"]!.split(",").map((s) => s.trim());
 
 if (existing[0]) {

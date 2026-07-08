@@ -2,7 +2,39 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 1 — ✅ COMPLETE (2026-07-08)**; next up: Phase 2 — Runner MVP
+## Current phase: **Phase 2 — Runner MVP — ✅ AC PASSED (2026-07-08)**; next up: Phase 3 — Orchestrated PR runs
+
+### Phase 2 AC evidence (all against the SSO-protected preview `…6u3z7fx9d…`, bypass via vault secret)
+
+| Flow | Result | Artifacts in MinIO |
+|---|---|---|
+| login.flow.json | ✅ passed (2.8s) | video, trace.zip, network.har, console.json |
+| inventory.flow.json | ✅ passed (3.2s) | full set |
+| rip.flow.json (buy via mock payments + canvas click) | ✅ passed (6.8s), `POST /api/packs/open → 200` | full set |
+| rip-broken.flow.json (`?break=rip`) | 🔴 failed at **s6**, class `assertion` | full set + `steps/s6/failure.png` + failure-bundle.json (500s in step network window, console errors, pending requests, aria snapshot) |
+
+Built: `apps/runner` — deterministic replay loop (navigate/click/type/press/waitFor/
+select/scroll, locator stacks w/ 2.5s per-locator + 8s budget, one deterministic
+retry), settle strategies networkidle/navigation/timeout, polling dom|url assertions,
+origin guard + host-scoped Vercel bypass header injection (cookie handshake),
+failure bundles, S3/MinIO artifact store, BullMQ `runs` worker with redis abort keys,
+`flow:run` CLI, Dockerfile (build-verified in Phase 13), 14 browser-level tests
+(CI now installs chromium).
+
+Vercel access token: stored in vault (2026-07-08); verified via
+`deploymentBelongsToProject → true`. SETUP item 7 ✅ — no external items pending.
+
+### Phase 2 lessons (keep in mind)
+
+- Clicking a canvas right after `networkidle` misses: the r3f scene needs ~1–2s to
+  become raycast-ready under SwiftShader. Interim: explicit warm-up step (`waitFor` +
+  `timeout` settle) in canvas specs; real fix is `animationQuiescence` (Phase 12).
+- DOM assertions must POLL to their deadline (fetch responses land after settle).
+- Retrying a click that half-succeeded can double-fire side effects (two 500s in the
+  broken run; the transient `hidden` pass on open-error). Revisit retry semantics for
+  non-idempotent steps in Phase 7.
+
+## Phase 1 — ✅ COMPLETE (2026-07-08)
 
 ### Phase 1 live AC evidence (PR abhinav26966/vercel-reviewer#1)
 
@@ -24,15 +56,6 @@ _Resume file for working sessions. Updated at the end of every session._
 - `MOCK_PAYMENTS` split via CLI: Production=0 (real Stripe test mode), Preview=1
   (SETUP #6 done — replay flows can buy packs on previews pre-Phase-11).
 
-### ⏳ One remaining external item (not Phase-blocking)
-
-- **Vercel access token**: CLI minting is refused by Vercel (`403 Cannot create
-  tokens for this app`) — tokens can only be created in the dashboard:
-  https://vercel.com/account/settings/tokens → create → then
-  `pnpm --filter @flowguard/api exec tsx --env-file=.env scripts/seed-project.ts
-  --repo abhinav26966/vercel-reviewer --vercel-project prj_TePAGdlaVuEH9N0WNoDBtYEBvhyp
-  --vercel-team team_rMutuXA9J2h2zIhlsY4pl2EB --vercel-token <TOKEN>`.
-  Needed by Phase 3 (base-deployment lookup via Vercel API); Phase 2 runs without it.
 
 ## Phase 0 — ✅ COMPLETE (2026-07-05)
 
@@ -111,11 +134,11 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 2 — Runner MVP** (doc 09): `apps/runner` on the Playwright image,
-  deterministic replay loop (navigate/click/type/press/waitFor, locator stacks,
-  networkidle/navigation/timeout settles, dom/url assertions, one retry, failure
-  bundle), Vercel bypass cookie mode (secret already in vault), artifacts to MinIO,
-  BullMQ `runs` queue + abort tokens, handwritten `login.flow.json` +
-  `inventory.flow.json`, CLI `pnpm flow:run <spec> <url>`.
-- No new founder resources needed for Phase 2 (bypass ✓, MinIO local ✓). The Vercel
-  token (dashboard-only) unblocks Phase 3 base resolution.
+- **Phase 3 — Orchestrated PR runs + base-vs-head + real comment** (doc 09): run
+  state machine in apps/api (planning → resolving_base → executing → reporting),
+  merge-base resolution via GitHub compare, base deployment lookup via Vercel API
+  (token in vault ✓), per-flow job fan-out to the BullMQ runner, base_result_cache,
+  pre-LLM comparator (head fail + base pass → 🔴; both fail → ⬜; env → 🟣), sticky
+  verdict-table renderer, supersede/cancel on new pushes, seed the handwritten specs
+  as `official` flow versions.
+- No new founder resources needed.

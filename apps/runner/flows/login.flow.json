@@ -1,0 +1,65 @@
+{
+  "specVersion": 3,
+  "flowId": "flw_login",
+  "projectId": "prj_862ymcrku4xal4",
+  "name": "Login",
+  "description": "Log in with the seeded default user and land on the shop. NOTE: the plaintext password is temporary — Phase 4 replaces it with a {{secret:default.password}} reference.",
+  "tier": "smoke",
+  "persona": null,
+  "startPath": "/login",
+  "steps": [
+    {
+      "id": "s1",
+      "title": "Enter email",
+      "action": {
+        "type": "type",
+        "locators": [
+          { "kind": "testid", "value": "email-input" },
+          { "kind": "css", "value": "input[type=email]" }
+        ],
+        "value": "default@demo.dev"
+      },
+      "settle": { "strategy": "timeout", "timeoutMs": 100 }
+    },
+    {
+      "id": "s2",
+      "title": "Enter password",
+      "action": {
+        "type": "type",
+        "locators": [
+          { "kind": "testid", "value": "password-input" },
+          { "kind": "css", "value": "input[type=password]" }
+        ],
+        "value": "demo1234"
+      },
+      "settle": { "strategy": "timeout", "timeoutMs": 100 }
+    },
+    {
+      "id": "s3",
+      "title": "Submit login",
+      "intent": "Authenticate and land on the shop",
+      "action": {
+        "type": "click",
+        "locators": [
+          { "kind": "testid", "value": "login-submit" },
+          { "kind": "role", "value": { "role": "button", "name": "Log in" } }
+        ]
+      },
+      "settle": { "strategy": "navigation", "timeoutMs": 15000 },
+      "postConditions": [
+        { "kind": "url", "assert": "pathMatches", "value": "^/shop$" },
+        {
+          "kind": "dom",
+          "assert": "textMatches",
+          "locators": [
+            { "kind": "testid", "value": "session-email" },
+            { "kind": "css", "value": "nav .who" }
+          ],
+          "value": "default@demo.dev",
+          "description": "Session email visible in the nav"
+        }
+      ],
+      "timingBaselineKey": "s3"
+    }
+  ]
+}

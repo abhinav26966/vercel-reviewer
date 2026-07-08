@@ -1,0 +1,29 @@
+{
+  "name": "@flowguard/runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "flow:run": "tsx src/cli.ts",
+    "worker": "tsx src/worker.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1081.0",
+    "@flowguard/schemas": "workspace:*",
+    "@flowguard/shared": "workspace:*",
+    "bullmq": "^5.79.3",
+    "ioredis": "^5.6.0",
+    "pino": "^10.3.1",
+    "playwright": "^1.61.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.9"
+  }
+}

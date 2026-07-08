@@ -17,3 +17,5 @@ coverage/
 # local data
 minio-data/
 postgres-data/
+.vercel
+.env*
