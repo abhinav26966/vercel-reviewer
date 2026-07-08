@@ -29,9 +29,15 @@ const { values: args } = parseArgs({
   },
 });
 
-if (!args.repo || !args["vercel-project"] || !args["vercel-token"]) {
-  console.error("required: --repo owner/repo --vercel-project prj_x --vercel-token <token>");
+if (!args.repo || !args["vercel-project"]) {
+  console.error("required: --repo owner/repo --vercel-project prj_x [--vercel-token <token>]");
   process.exit(1);
+}
+if (!args["vercel-token"]) {
+  console.warn(
+    "no --vercel-token: deployment→project verification and base-deployment lookup " +
+      "will be unavailable until one is added (re-run this script with --vercel-token).",
+  );
 }
 
 const masterKey = parseMasterKey(
@@ -74,7 +80,7 @@ async function storeSecret(kind: string, plaintext: string): Promise<string> {
 }
 
 const existing = await db.select().from(projects).where(eq(projects.githubRepo, args.repo)).limit(1);
-const tokenRef = await storeSecret("token", args["vercel-token"]);
+const tokenRef = args["vercel-token"] ? await storeSecret("token", args["vercel-token"]) : null;
 const bypassRef = args["bypass-secret"] ? await storeSecret("bypass", args["bypass-secret"]) : null;
 const baseBranches = args["base-branches"]!.split(",").map((s) => s.trim());
 

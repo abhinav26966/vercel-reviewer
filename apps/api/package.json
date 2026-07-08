@@ -8,9 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "tsx watch src/server.ts",
-    "dev:webhooks": "smee --url $SMEE_URL --target http://localhost:8787/webhooks/github",
-    "seed:project": "tsx scripts/seed-project.ts"
+    "dev": "tsx watch --env-file=.env src/server.ts",
+    "dev:webhooks": "tsx --env-file=.env scripts/smee.ts",
+    "seed:project": "tsx --env-file=.env scripts/seed-project.ts"
   },
   "dependencies": {
     "@flowguard/db": "workspace:*",

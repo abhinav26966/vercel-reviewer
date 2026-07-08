@@ -2,7 +2,29 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 1 — Webhook plumbing** (code complete; live AC needs GitHub App — SETUP.md items 4–5)
+## Current phase: **Phase 1 — Webhook plumbing** (live AC nearly complete — sticky-comment AC PASSED on PR #1; base-run AC awaits founder merging PR #1)
+
+### Live AC evidence (2026-07-08, PR abhinav26966/vercel-reviewer#1)
+
+- GitHub App `flowguard-dev-abhinav` (id 4237892) installed → installation webhook
+  verified through smee → `installation_id 145154076` stored.
+- Project seeded: `prj_862ymcrku4xal4` bound to Vercel `prj_TePAGdlaVuEH9N0WNoDBtYEBvhyp`
+  / `team_rMutuXA9J2h2zIhlsY4pl2EB` (no Vercel token yet — verification fails open).
+- PR opened → `awaiting_deployment` run + pending status → Vercel preview success →
+  run upgraded to `planning` + **ONE** sticky comment (id 4912456115) with preview URL.
+- Second push → **same comment id edited in place** (`219c88f` → `41b0ff4`), one run
+  row per SHA, statuses pending→success per push. Never a second comment. ✅
+- Remaining: founder merges PR #1 → expect `pull_request.closed` to cancel open runs
+  AND main deployment to create a `kind='base'` run row.
+
+### ⚠️ Needs founder consent (permission-gated, I can't run these)
+
+1. `vercel tokens add flowguard-api` — mint the access token for the project binding
+   (then re-run seed with `--vercel-token`).
+2. Protection Bypass for Automation — **Vercel Authentication is ON for previews**
+   (`all_except_custom_domains`); the Phase 2 runner cannot reach preview URLs
+   without this secret. Generate in dashboard (project → Settings → Deployment
+   Protection) or authorize the API call.
 
 ## Phase 0 — ✅ COMPLETE (2026-07-05)
 
