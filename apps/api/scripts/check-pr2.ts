@@ -1,0 +1,10 @@
+import { createGithubApp, decodePrivateKey } from "@flowguard/github";
+const app = createGithubApp({ appId: process.env.GITHUB_APP_ID!, privateKey: decodePrivateKey(process.env.GITHUB_APP_PRIVATE_KEY_BASE64!) });
+const octokit = await app.getInstallationOctokit(145154076);
+const { data: comments } = await octokit.rest.issues.listComments({ owner: "abhinav26966", repo: "vercel-reviewer", issue_number: 2 });
+const ours = comments.filter((c) => c.body?.includes("flowguard:pr-summary"));
+console.log(`flowguard comments: ${ours.length} (of ${comments.length} total)`);
+for (const c of ours) console.log(`--- id ${c.id}:\n${c.body}`);
+const { data: statuses } = await octokit.rest.repos.listCommitStatusesForRef({ owner: "abhinav26966", repo: "vercel-reviewer", ref: "b88d1dc" });
+console.log("--- flowguard statuses (newest first):");
+for (const s of statuses.filter((x) => x.context === "flowguard/flows").slice(0, 3)) console.log(`  ${s.state}: ${s.description}`);

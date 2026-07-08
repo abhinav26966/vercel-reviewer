@@ -19,9 +19,6 @@ export async function POST(req: NextRequest) {
   }
 
   const packs = session.packs - 1;
-  // regression under test (Phase 3 AC): the "streamlined" service crashes instead
-  // of responding. `withSession` intentionally untouched so the diff stays minimal.
-  void packs;
-  void withSession;
-  return NextResponse.json({ error: "inventory service crashed" }, { status: 500 });
+  const res = NextResponse.json({ ok: true, packs, cards: 5 });
+  return withSession(res, { ...session, packs });
 }
