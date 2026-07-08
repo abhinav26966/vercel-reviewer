@@ -58,7 +58,9 @@ export async function handlePullRequest(deps: HandlerDeps, payload: PullRequestE
       state: pr.merged ? "merged" : "closed",
     });
     const cancelled = await store.cancelOpenRunsForPr(prRow.id);
-    logger.info({ pr: pr.number, cancelled }, "PR closed — open runs cancelled");
-    // Phase 4: also expire PR-scoped credentials/payment configs here (doc 07 §3)
+    // PR-scoped credentials reference a DB branch about to be garbage-collected —
+    // expiry is free hygiene (doc 07 §3)
+    const expired = await store.expirePrScopedCredentials(project.id, pr.number);
+    logger.info({ pr: pr.number, cancelled, expired }, "PR closed — runs cancelled, PR-scoped credentials expired");
   }
 }

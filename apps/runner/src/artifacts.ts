@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { RunnerEnv } from "./config.js";
 
 /**
@@ -9,6 +9,7 @@ import type { RunnerEnv } from "./config.js";
 export interface ArtifactStore {
   putFile(key: string, filePath: string, contentType?: string): Promise<string>;
   putBuffer(key: string, data: Buffer | string, contentType?: string): Promise<string>;
+  getBuffer(key: string): Promise<Buffer>;
 }
 
 export class S3ArtifactStore implements ArtifactStore {
@@ -41,18 +42,33 @@ export class S3ArtifactStore implements ArtifactStore {
     );
     return key;
   }
+
+  async getBuffer(key: string): Promise<Buffer> {
+    const res = await this.client.send(
+      new GetObjectCommand({ Bucket: this.env.S3_BUCKET, Key: key }),
+    );
+    return Buffer.from(await res.Body!.transformToByteArray());
+  }
 }
 
 /** For --no-upload CLI runs and unit tests. */
 export class NullArtifactStore implements ArtifactStore {
   uploads: string[] = [];
-  async putFile(key: string): Promise<string> {
+  objects = new Map<string, Buffer>();
+  async putFile(key: string, filePath: string): Promise<string> {
     this.uploads.push(key);
+    this.objects.set(key, await readFile(filePath).catch(() => Buffer.alloc(0)));
     return key;
   }
-  async putBuffer(key: string): Promise<string> {
+  async putBuffer(key: string, data: Buffer | string): Promise<string> {
     this.uploads.push(key);
+    this.objects.set(key, typeof data === "string" ? Buffer.from(data) : data);
     return key;
+  }
+  async getBuffer(key: string): Promise<Buffer> {
+    const v = this.objects.get(key);
+    if (!v) throw new Error(`no such object: ${key}`);
+    return v;
   }
 }
 

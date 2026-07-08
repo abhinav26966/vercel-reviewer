@@ -3,62 +3,38 @@
   "flowId": "flw_inventory",
   "projectId": "prj_862ymcrku4xal4",
   "name": "Inventory",
-  "description": "Log in, open the inventory, verify the page renders. Login steps inline until Phase 4 storageState injection.",
+  "description": "Open the inventory, verify the page renders.",
   "tier": "standard",
-  "persona": null,
-  "startPath": "/login",
+  "persona": "default",
+  "startPath": "/inventory",
   "steps": [
-    {
-      "id": "s1",
-      "title": "Enter email",
-      "action": {
-        "type": "type",
-        "locators": [
-          { "kind": "testid", "value": "email-input" },
-          { "kind": "css", "value": "input[type=email]" }
-        ],
-        "value": "default@demo.dev"
-      },
-      "settle": { "strategy": "timeout", "timeoutMs": 100 }
-    },
-    {
-      "id": "s2",
-      "title": "Enter password",
-      "action": {
-        "type": "type",
-        "locators": [
-          { "kind": "testid", "value": "password-input" },
-          { "kind": "css", "value": "input[type=password]" }
-        ],
-        "value": "demo1234"
-      },
-      "settle": { "strategy": "timeout", "timeoutMs": 100 }
-    },
-    {
-      "id": "s3",
-      "title": "Submit login",
-      "action": {
-        "type": "click",
-        "locators": [
-          { "kind": "testid", "value": "login-submit" },
-          { "kind": "role", "value": { "role": "button", "name": "Log in" } }
-        ]
-      },
-      "settle": { "strategy": "navigation", "timeoutMs": 15000 },
-      "postConditions": [{ "kind": "url", "assert": "pathMatches", "value": "^/shop$" }]
-    },
     {
       "id": "s4",
       "title": "Open inventory",
       "intent": "Inventory page renders with the pack list (or empty state)",
-      "action": { "type": "navigate", "path": "/inventory" },
-      "settle": { "strategy": "networkidle", "timeoutMs": 8000 },
+      "action": {
+        "type": "navigate",
+        "path": "/inventory"
+      },
+      "settle": {
+        "strategy": "networkidle",
+        "timeoutMs": 8000
+      },
       "postConditions": [
-        { "kind": "url", "assert": "pathMatches", "value": "^/inventory$" },
+        {
+          "kind": "url",
+          "assert": "pathMatches",
+          "value": "^/inventory$"
+        },
         {
           "kind": "dom",
           "assert": "textMatches",
-          "locators": [{ "kind": "css", "value": "main h1" }],
+          "locators": [
+            {
+              "kind": "css",
+              "value": "main h1"
+            }
+          ],
           "value": "Inventory",
           "description": "Inventory heading rendered"
         }

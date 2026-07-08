@@ -9,6 +9,7 @@ import { createLogger, newId } from "@flowguard/shared";
 import { NullArtifactStore, S3ArtifactStore } from "./artifacts.js";
 import { loadRunnerEnv } from "./config.js";
 import { executeFlow } from "./execute-flow.js";
+import { VaultSecretResolver } from "./secrets.js";
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
@@ -46,6 +47,8 @@ const result = await executeFlow({
   logger,
   artifacts,
   headless: !flags.has("--headed"),
+  // vault access is optional for CLI runs of secretless specs
+  ...(process.env.FLOWGUARD_MASTER_KEY ? { secretResolver: new VaultSecretResolver() } : {}),
 });
 
 console.log(JSON.stringify(result, null, 2));

@@ -5,30 +5,31 @@ import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { Logger } from "pino";
 import { RunFlowResultSchema } from "@flowguard/schemas";
-import { evalAssertion } from "./assertions.js";
+import { globalRedaction } from "@flowguard/shared";
 import { artifactKey, type ArtifactStore } from "./artifacts.js";
+import { redactHarFile } from "./har-redact.js";
 import { NetworkTracker } from "./network-tracker.js";
-import { LocatorMissError, resolveLocator } from "./pw-locators.js";
+import { specUsesSecrets, type SecretResolver } from "./secrets.js";
+import { ensureStorageState, LoginFailedError } from "./session.js";
+import { runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
 export interface ExecuteFlowOptions {
   job: ExecuteFlowJob;
   logger: Logger;
   artifacts: ArtifactStore;
+  /** Resolves sec_* references; required for personas / secret placeholders. */
+  secretResolver?: SecretResolver;
   /** Checked between steps (doc 01 §6 cancellation). */
   shouldAbort?: () => Promise<boolean>;
   headless?: boolean;
-}
-
-interface StepFailure {
-  failureClass: "locator_miss" | "assertion" | "env";
-  message: string;
-  assertions: StepAssertionResult[];
+  databaseUrl?: string;
 }
 
 /**
- * Deterministic replay loop (doc 04 §§2–3): context setup → bypass → per step
- * act/settle/assert with one deterministic retry → failure bundle → artifacts.
+ * Deterministic replay loop (doc 04 §§2–3): session injection → context setup →
+ * bypass → per step act/settle/assert with one deterministic retry → failure
+ * bundle → redacted artifacts.
  */
 export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResult> {
   const { job, logger, artifacts } = opts;
@@ -36,6 +37,8 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   const workdir = await mkdtemp(path.join(tmpdir(), "flowguard-run-"));
   const harPath = path.join(workdir, "network.har");
   const tracePath = path.join(workdir, "trace.zip");
+  // secret-typing specs skip tracing: trace network capture can embed request bodies
+  const collectTrace = !specUsesSecrets(spec);
 
   const consoleLines: Array<{ ts: number; text: string }> = [];
   const consoleErrors: Array<{ ts?: number; text: string }> = [];
@@ -58,19 +61,52 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   const flowStart = Date.now();
   const tracker = new NetworkTracker();
 
+  const lookupSecret: SecretLookup = async (placeholder) => {
+    const ref = job.configBundle.secretRefs[placeholder];
+    if (!ref) throw new Error(`no secret resolved for placeholder "${placeholder}" on this target`);
+    if (!opts.secretResolver) throw new Error("no secret resolver configured");
+    return opts.secretResolver.resolve(ref);
+  };
+
   try {
     browser = await chromium.launch({
       headless: opts.headless ?? true,
       // software WebGL so canvas flows render identically everywhere (doc 04 §2)
       args: ["--use-angle=swiftshader"],
     });
+
+    // ── session: log in once per (persona, deployment), inject storageState ──
+    let storageStatePath: string | null = null;
+    if (job.configBundle.persona) {
+      try {
+        storageStatePath = await ensureStorageState(
+          {
+            browser,
+            artifacts,
+            logger,
+            lookupSecret,
+            ...(opts.databaseUrl !== undefined ? { databaseUrl: opts.databaseUrl } : {}),
+          },
+          job,
+        );
+      } catch (err) {
+        const detail = err instanceof LoginFailedError ? err.detail : String(err);
+        logger.error({ persona: job.configBundle.persona.name, detail }, "login failed for persona");
+        outcome = "error";
+        failure = { failureClass: "env", message: `login failed: ${detail}`, assertions: [] };
+      }
+    }
+
     context = await browser.newContext({
       viewport: { width: spec.viewport.width, height: spec.viewport.height },
       deviceScaleFactor: spec.viewport.dpr,
       recordVideo: job.collect.video ? { dir: workdir } : undefined,
       recordHar: job.collect.har ? { path: harPath, content: "omit" } : undefined,
+      ...(storageStatePath ? { storageState: storageStatePath } : {}),
     });
-    await context.tracing.start({ screenshots: true, snapshots: true });
+    if (collectTrace) {
+      await context.tracing.start({ screenshots: true, snapshots: true });
+    }
 
     const page = await context.newPage();
     tracker.attach(page);
@@ -88,18 +124,19 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
 
     installOriginGuardAndBypass(page, job, logger);
 
-    // initial navigation to the deployment (bypass cookie handshake happens here)
     const baseUrl = job.target.deploymentUrl.replace(/\/$/, "");
-    try {
-      await page.goto(baseUrl + spec.startPath, { waitUntil: "load", timeout: 30000 });
-    } catch (err) {
-      logger.error({ err }, "initial navigation failed");
-      outcome = "error";
-      failure = {
-        failureClass: "env",
-        message: `deployment unreachable: ${err instanceof Error ? err.message.split("\n")[0] : err}`,
-        assertions: [],
-      };
+    if (outcome === "passed") {
+      try {
+        await page.goto(baseUrl + spec.startPath, { waitUntil: "load", timeout: 30000 });
+      } catch (err) {
+        logger.error({ err }, "initial navigation failed");
+        outcome = "error";
+        failure = {
+          failureClass: "env",
+          message: `deployment unreachable: ${err instanceof Error ? err.message.split("\n")[0] : err}`,
+          assertions: [],
+        };
+      }
     }
     if (outcome === "passed" && (await isProtectionChallenge(page))) {
       outcome = "error";
@@ -110,6 +147,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       };
     }
 
+    const stepCtx = { page, baseUrl, tracker, logger, lookupSecret };
     for (const step of outcome === "passed" ? spec.steps : []) {
       if (opts.shouldAbort && (await opts.shouldAbort())) {
         logger.info({ step: step.id }, "abort requested — stopping between steps");
@@ -118,11 +156,11 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       }
 
       const stepStart = Date.now();
-      let attemptFailure = await runStepOnce(page, baseUrl, step, tracker, logger);
+      let attemptFailure = await runStepOnce(stepCtx, step);
       if (attemptFailure) {
         // one deterministic retry: page may have been mid-hydration (doc 04 §3)
         logger.warn({ step: step.id, reason: attemptFailure.message }, "step failed — deterministic retry");
-        attemptFailure = await runStepOnce(page, baseUrl, step, tracker, logger);
+        attemptFailure = await runStepOnce(stepCtx, step);
       }
       const stepEnd = Date.now();
 
@@ -147,12 +185,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       }
     }
 
-    // teardown + artifact flush BEFORE assembling the result: video/har/trace only
-    // exist on disk once the context closes
+    // teardown + artifact flush BEFORE assembling the result; every text artifact
+    // passes the redaction registry (doc 07 §4.3)
     if (context) {
-      await context.tracing.stop({ path: tracePath }).catch(() => {});
-      const page = context.pages()[0];
-      const video = page?.video();
+      if (collectTrace) await context.tracing.stop({ path: tracePath }).catch(() => {});
+      const page2 = context.pages()[0];
+      const video = page2?.video();
       await context.close();
       context = null;
       const put = async (name: string, fn: () => Promise<string>) => {
@@ -169,18 +207,25 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         }
       }
       if (job.collect.har) {
+        await redactHarFile(harPath, globalRedaction);
         await put("har", () => artifacts.putFile(artifactKey(job, "network.har"), harPath, "application/json"));
       }
-      await put("trace", () => artifacts.putFile(artifactKey(job, "trace.zip"), tracePath, "application/zip"));
+      if (collectTrace) {
+        await put("trace", () => artifacts.putFile(artifactKey(job, "trace.zip"), tracePath, "application/zip"));
+      }
       await put("console", () =>
-        artifacts.putBuffer(artifactKey(job, "console.json"), JSON.stringify(consoleLines, null, 2), "application/json"),
+        artifacts.putBuffer(
+          artifactKey(job, "console.json"),
+          globalRedaction.redactString(JSON.stringify(consoleLines, null, 2)),
+          "application/json",
+        ),
       );
     }
 
     return finalize(outcome, failedStepId, failure);
   } finally {
     try {
-      if (context) await context.close().catch(() => {});
+      if (context) await (context as BrowserContext).close().catch(() => {});
       await browser?.close();
     } finally {
       await rm(workdir, { recursive: true, force: true }).catch(() => {});
@@ -192,137 +237,30 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
     failedStep: string | null,
     fail: StepFailure | null,
   ): RunFlowResult {
-    return RunFlowResultSchema.parse({
-      runId: job.runId,
-      flowId: job.flowId,
-      specVersionId: job.specVersionId,
-      target: job.target.kind,
-      status,
-      failedStepId: failedStep,
-      failureClass: fail?.failureClass ?? null,
-      steps,
-      perf: { flowTotalMs: Date.now() - flowStart, regressions: [] },
-      artifacts: artifactKeys,
-      diagnostics: {
-        pendingRequestsAtTimeout: tracker.pendingRequests(),
-        consoleErrors: consoleErrors.slice(-20),
-        pageCrashed,
-        nextErrorOverlay: false, // classifier lands in Phase 7
-        blankScreenScore: 0,
-      },
-    });
-  }
-}
-
-/** Act + settle + assert. Returns null on success, failure details otherwise. */
-async function runStepOnce(
-  page: Page,
-  baseUrl: string,
-  step: FlowStep,
-  tracker: NetworkTracker,
-  logger: Logger,
-): Promise<StepFailure | null> {
-  const urlBefore = page.url();
-  try {
-    await act(page, baseUrl, step);
-  } catch (err) {
-    if (err instanceof LocatorMissError) {
-      return { failureClass: "locator_miss", message: err.message, assertions: [] };
-    }
-    return {
-      failureClass: "env",
-      message: err instanceof Error ? err.message.split("\n")[0]! : String(err),
-      assertions: [],
-    };
-  }
-
-  await settle(page, step, urlBefore, logger);
-
-  const results: StepAssertionResult[] = [];
-  for (const assertion of step.postConditions) {
-    results.push(await evalAssertion(page, assertion));
-  }
-  const failedAssertion = results.find((r) => !r.pass);
-  if (failedAssertion) {
-    return {
-      failureClass: "assertion",
-      message: failedAssertion.message ?? `${failedAssertion.kind} assertion failed`,
-      assertions: results,
-    };
-  }
-  return null;
-}
-
-async function act(page: Page, baseUrl: string, step: FlowStep): Promise<void> {
-  const action = step.action;
-  switch (action.type) {
-    case "navigate":
-      await page.goto(baseUrl + action.path, { waitUntil: "load", timeout: 30000 });
-      return;
-    case "click":
-      await (await resolveLocator(page, action.locators)).click();
-      return;
-    case "type":
-      await (await resolveLocator(page, action.locators)).fill(action.value);
-      return;
-    case "press": {
-      if (action.locators) {
-        await (await resolveLocator(page, action.locators)).press(action.key);
-      } else {
-        await page.keyboard.press(action.key);
-      }
-      return;
-    }
-    case "waitFor": {
-      const loc = await resolveLocator(page, action.locators);
-      await loc.waitFor({ state: action.state, timeout: 10000 });
-      return;
-    }
-    case "select":
-      await (await resolveLocator(page, action.locators)).selectOption(action.value);
-      return;
-    case "scroll": {
-      if (action.locators) {
-        await (await resolveLocator(page, action.locators)).scrollIntoViewIfNeeded();
-      } else if (action.y !== undefined) {
-        await page.mouse.wheel(0, action.y);
-      }
-      return;
-    }
-    default:
-      throw new Error(`action type "${action.type}" lands in a later phase`);
-  }
-}
-
-/** Settle strategies networkidle|navigation|timeout (doc 09 Phase 2 scope). */
-async function settle(page: Page, step: FlowStep, urlBefore: string, logger: Logger): Promise<void> {
-  const { strategy, timeoutMs } = step.settle;
-  try {
-    switch (strategy) {
-      case "navigation": {
-        // wait until the URL actually changed, then for the new document to load
-        const deadline = Date.now() + timeoutMs;
-        while (page.url() === urlBefore && Date.now() < deadline) {
-          await page.waitForTimeout(100);
-        }
-        await page.waitForLoadState("load", { timeout: Math.max(1, deadline - Date.now()) });
-        return;
-      }
-      case "networkidle":
-        await page.waitForLoadState("networkidle", { timeout: timeoutMs });
-        return;
-      case "timeout":
-        await page.waitForTimeout(timeoutMs);
-        return;
-      default:
-        // animationQuiescence etc. land in Phase 12; use a bounded networkidle for now
-        await page.waitForLoadState("networkidle", { timeout: timeoutMs });
-        return;
-    }
-  } catch {
-    // settle timeout is not itself a failure: proceed to post-condition evaluation
-    // (doc 04 §3; the hang classifier arrives in Phase 7)
-    logger.debug({ step: step.id, strategy }, "settle timed out — evaluating post-conditions anyway");
+    return RunFlowResultSchema.parse(
+      globalRedaction.redactDeep({
+        runId: job.runId,
+        flowId: job.flowId,
+        specVersionId: job.specVersionId,
+        target: job.target.kind,
+        status,
+        failedStepId: failedStep,
+        failureClass:
+          status === "error" && fail?.message.startsWith("login failed")
+            ? "login_failed"
+            : (fail?.failureClass ?? null),
+        steps,
+        perf: { flowTotalMs: Date.now() - flowStart, regressions: [] },
+        artifacts: artifactKeys,
+        diagnostics: {
+          pendingRequestsAtTimeout: tracker.pendingRequests(),
+          consoleErrors: consoleErrors.slice(-20),
+          pageCrashed,
+          nextErrorOverlay: false, // classifier lands in Phase 7
+          blankScreenScore: 0,
+        },
+      }),
+    );
   }
 }
 
@@ -352,16 +290,18 @@ async function captureFailureBundle(
       .catch(() => "unavailable");
     await artifacts.putBuffer(
       artifactKey(job, `steps/${step.id}/failure-bundle.json`),
-      JSON.stringify(
-        {
-          stepId: step.id,
-          url: page.url(),
-          pendingRequests: tracker.pendingRequests(),
-          consoleTail: consoleLines.slice(-20),
-          ariaSnapshot: aria,
-        },
-        null,
-        2,
+      globalRedaction.redactString(
+        JSON.stringify(
+          {
+            stepId: step.id,
+            url: page.url(),
+            pendingRequests: tracker.pendingRequests(),
+            consoleTail: consoleLines.slice(-20),
+            ariaSnapshot: aria,
+          },
+          null,
+          2,
+        ),
       ),
       "application/json",
     );
@@ -402,7 +342,7 @@ function installOriginGuardAndBypass(page: Page, job: ExecuteFlowJob, logger: Lo
   });
 }
 
-/** Vercel's SSO challenge page (we detect it so protection issues are env, not flow, failures). */
+/** Vercel's SSO challenge page (protection issues are env, not flow, failures). */
 async function isProtectionChallenge(page: Page): Promise<boolean> {
   const url = page.url();
   return url.includes("vercel.com/sso-api") || url.includes("_vercel/protection");

@@ -3,89 +3,14 @@
   "flowId": "flw_rip",
   "projectId": "prj_862ymcrku4xal4",
   "name": "Buy & Rip (DOM-only)",
-  "description": "Log in, buy a pack (mock payments on previews), open it on the canvas. DOM-only assertions for Phase 2 \u2014 vision/state assertions on the revealed cards land in Phase 12.",
+  "description": "Buy a pack (mock payments on previews), open it on the canvas. DOM-only assertions for Phase 2 \u2014 vision/state assertions on the revealed cards land in Phase 12.",
   "tier": "standard",
-  "persona": null,
-  "startPath": "/login",
+  "persona": "default",
+  "startPath": "/shop",
   "env": {
     "requiresWebGL": true
   },
   "steps": [
-    {
-      "id": "s1",
-      "title": "Enter email",
-      "action": {
-        "type": "type",
-        "locators": [
-          {
-            "kind": "testid",
-            "value": "email-input"
-          },
-          {
-            "kind": "css",
-            "value": "input[type=email]"
-          }
-        ],
-        "value": "default@demo.dev"
-      },
-      "settle": {
-        "strategy": "timeout",
-        "timeoutMs": 100
-      }
-    },
-    {
-      "id": "s2",
-      "title": "Enter password",
-      "action": {
-        "type": "type",
-        "locators": [
-          {
-            "kind": "testid",
-            "value": "password-input"
-          },
-          {
-            "kind": "css",
-            "value": "input[type=password]"
-          }
-        ],
-        "value": "demo1234"
-      },
-      "settle": {
-        "strategy": "timeout",
-        "timeoutMs": 100
-      }
-    },
-    {
-      "id": "s3",
-      "title": "Submit login",
-      "action": {
-        "type": "click",
-        "locators": [
-          {
-            "kind": "testid",
-            "value": "login-submit"
-          },
-          {
-            "kind": "role",
-            "value": {
-              "role": "button",
-              "name": "Log in"
-            }
-          }
-        ]
-      },
-      "settle": {
-        "strategy": "navigation",
-        "timeoutMs": 15000
-      },
-      "postConditions": [
-        {
-          "kind": "url",
-          "assert": "pathMatches",
-          "value": "^/shop$"
-        }
-      ]
-    },
     {
       "id": "s4",
       "title": "Buy a pack",

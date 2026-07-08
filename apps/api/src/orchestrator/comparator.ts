@@ -28,6 +28,8 @@ export function compareFlow(params: {
   base: RunFlowResult | null;
   baseAvailable: boolean;
   link: ArtifactLinker;
+  /** Dashboard URL for entering PR-scoped credentials (login_failed copy). */
+  credentialsUrl?: string;
 }): FlowComparison {
   const { spec, head, base, baseAvailable, link } = params;
 
@@ -39,7 +41,7 @@ export function compareFlow(params: {
   if (head.status === "error" || (head.failureClass && ENV_FAILURE_CLASSES.has(head.failureClass))) {
     return {
       verdict: "env_issue",
-      detail: envCopy(head),
+      detail: envCopy(head, params.credentialsUrl),
     };
   }
 
@@ -61,9 +63,12 @@ export function compareFlow(params: {
   return { verdict: "broken", detail: failureDetail };
 }
 
-function envCopy(head: RunFlowResult): string {
+function envCopy(head: RunFlowResult, credentialsUrl?: string): string {
   if (head.failureClass === "login_failed") {
-    return "login failed on this preview — credentials may be wrong or the PR may use a separate database";
+    const fix = credentialsUrl
+      ? ` — provide [PR-scoped credentials](${credentialsUrl}), then comment \`/flowguard rerun\``
+      : " — check the project credentials, then comment `/flowguard rerun`";
+    return `login failed on this preview: credentials may be wrong, or this PR may use a separate database${fix}`;
   }
   if (head.failureClass === "payment_unverified_env") {
     return "payment step skipped — could not verify test mode on this preview";

@@ -1,0 +1,171 @@
+import type { Page } from "playwright";
+import type { Logger } from "pino";
+import { evalAssertion } from "./assertions.js";
+import type { NetworkTracker } from "./network-tracker.js";
+import { LocatorMissError, resolveLocator } from "./pw-locators.js";
+import { findSecretPlaceholders } from "./secrets.js";
+import type { FlowStep, StepAssertionResult } from "./types.js";
+
+export interface StepFailure {
+  failureClass: "locator_miss" | "assertion" | "env";
+  message: string;
+  assertions: StepAssertionResult[];
+}
+
+/** Exchanges a `{{secret:persona.field}}` placeholder name for its plaintext. */
+export type SecretLookup = (placeholder: string) => Promise<string>;
+
+export interface StepContext {
+  page: Page;
+  baseUrl: string;
+  tracker: NetworkTracker;
+  logger: Logger;
+  /** Absent → specs with secret placeholders fail closed. */
+  lookupSecret?: SecretLookup;
+}
+
+/** Act + settle + assert. Returns null on success, failure details otherwise. */
+export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<StepFailure | null> {
+  const urlBefore = ctx.page.url();
+  try {
+    await act(ctx, step);
+  } catch (err) {
+    if (err instanceof LocatorMissError) {
+      return { failureClass: "locator_miss", message: err.message, assertions: [] };
+    }
+    return {
+      failureClass: "env",
+      message: err instanceof Error ? err.message.split("\n")[0]! : String(err),
+      assertions: [],
+    };
+  }
+
+  await settle(ctx, step, urlBefore);
+
+  const results: StepAssertionResult[] = [];
+  for (const assertion of step.postConditions) {
+    results.push(await evalAssertion(ctx.page, assertion));
+  }
+  const failedAssertion = results.find((r) => !r.pass);
+  if (failedAssertion) {
+    return {
+      failureClass: "assertion",
+      message: failedAssertion.message ?? `${failedAssertion.kind} assertion failed`,
+      assertions: results,
+    };
+  }
+  return null;
+}
+
+async function act(ctx: StepContext, step: FlowStep): Promise<void> {
+  const { page, baseUrl } = ctx;
+  const action = step.action;
+  switch (action.type) {
+    case "navigate":
+      await page.goto(baseUrl + action.path, { waitUntil: "load", timeout: 30000 });
+      return;
+    case "click":
+      await (await resolveLocator(page, action.locators)).click();
+      return;
+    case "type": {
+      const locator = await resolveLocator(page, action.locators);
+      const placeholders = findSecretPlaceholders(action.value);
+      if (placeholders.length === 0) {
+        await locator.fill(action.value);
+        return;
+      }
+      // Secrets are typed via CDP Input.insertText: the plaintext never appears in
+      // a Playwright API call, so it cannot enter trace actions (doc 04 §3).
+      await typeSecretValue(ctx, locator, action.value, placeholders);
+      return;
+    }
+    case "press": {
+      if (action.locators) {
+        await (await resolveLocator(page, action.locators)).press(action.key);
+      } else {
+        await page.keyboard.press(action.key);
+      }
+      return;
+    }
+    case "waitFor": {
+      const loc = await resolveLocator(page, action.locators);
+      await loc.waitFor({ state: action.state, timeout: 10000 });
+      return;
+    }
+    case "select":
+      await (await resolveLocator(page, action.locators)).selectOption(action.value);
+      return;
+    case "scroll": {
+      if (action.locators) {
+        await (await resolveLocator(page, action.locators)).scrollIntoViewIfNeeded();
+      } else if (action.y !== undefined) {
+        await page.mouse.wheel(0, action.y);
+      }
+      return;
+    }
+    default:
+      throw new Error(`action type "${action.type}" lands in a later phase`);
+  }
+}
+
+async function typeSecretValue(
+  ctx: StepContext,
+  locator: Awaited<ReturnType<typeof resolveLocator>>,
+  template: string,
+  placeholders: string[],
+): Promise<void> {
+  const { page, baseUrl } = ctx;
+  if (!ctx.lookupSecret) {
+    throw new Error(`secret placeholder used but no credentials were resolved for this target`);
+  }
+  // Origin scoping (doc 07 §4.5): secrets are typed ONLY into the deployment host.
+  const pageHost = new URL(page.url()).host;
+  const depHost = new URL(baseUrl).host;
+  if (pageHost !== depHost) {
+    throw new Error(`refusing to type a secret into ${pageHost} (deployment host is ${depHost})`);
+  }
+  let text = template;
+  for (const name of placeholders) {
+    const plaintext = await ctx.lookupSecret(name);
+    text = text.replaceAll(`{{secret:${name}}}`, plaintext);
+  }
+  await locator.click();
+  await locator.fill("");
+  const session = await page.context().newCDPSession(page);
+  try {
+    await session.send("Input.insertText", { text });
+  } finally {
+    await session.detach().catch(() => {});
+  }
+}
+
+/** Settle strategies networkidle|navigation|timeout (doc 09 Phase 2 scope). */
+async function settle(ctx: StepContext, step: FlowStep, urlBefore: string): Promise<void> {
+  const { page, logger } = ctx;
+  const { strategy, timeoutMs } = step.settle;
+  try {
+    switch (strategy) {
+      case "navigation": {
+        const deadline = Date.now() + timeoutMs;
+        while (page.url() === urlBefore && Date.now() < deadline) {
+          await page.waitForTimeout(100);
+        }
+        await page.waitForLoadState("load", { timeout: Math.max(1, deadline - Date.now()) });
+        return;
+      }
+      case "networkidle":
+        await page.waitForLoadState("networkidle", { timeout: timeoutMs });
+        return;
+      case "timeout":
+        await page.waitForTimeout(timeoutMs);
+        return;
+      default:
+        // animationQuiescence etc. land in Phase 12; bounded networkidle for now
+        await page.waitForLoadState("networkidle", { timeout: timeoutMs });
+        return;
+    }
+  } catch {
+    // settle timeout is not itself a failure (doc 04 §3)
+    logger.debug({ step: step.id, strategy }, "settle timed out — evaluating post-conditions anyway");
+  }
+}

@@ -306,3 +306,87 @@ describe("orchestrateRun", () => {
     expect(h.enqueued).toHaveLength(0);
   });
 });
+
+// ── Phase 4: persona wiring ────────────────────────────────────────────────
+describe("orchestrateRun — credentials & personas", () => {
+  const personaSpec: FlowSpec = FlowSpecSchema.parse({
+    specVersion: 3,
+    flowId: "flw_inventory",
+    projectId: "prj_1",
+    name: "Inventory",
+    persona: "default",
+    startPath: "/inventory",
+    steps: [
+      {
+        id: "s1",
+        title: "nav",
+        action: { type: "navigate", path: "/inventory" },
+        settle: { strategy: "networkidle", timeoutMs: 5000 },
+      },
+    ],
+  });
+
+  function personaHarness(withCreds: boolean) {
+    const h = makeHarness({
+      headResults: { flw_inventory: { ...result("head", "passed"), flowId: "flw_inventory" } },
+      baseResults: { flw_inventory: { ...result("base", "passed"), flowId: "flw_inventory" } },
+      flows: [],
+    });
+    h.store.officialFlows.push({
+      flowId: "flw_inventory",
+      flowName: "Inventory",
+      tier: "standard",
+      specVersionId: "fsv_inv",
+      spec: personaSpec,
+      branch: "main",
+      projectId: "prj_1",
+    });
+    if (withCreds) {
+      h.store.credentialSets.push({
+        id: "crd_1",
+        projectId: "prj_1",
+        scope: "project",
+        prNumber: null,
+        persona: "default",
+        usernameSecretId: "sec_u",
+        passwordSecretId: "sec_p",
+        dataBranchDiffers: false,
+        expiresAt: null,
+      });
+    }
+    const jobs: Array<{ jobId: string; bundle: unknown }> = [];
+    const orig = h.deps.enqueueFlowJob;
+    h.deps.enqueueFlowJob = async (job, jobId) => {
+      jobs.push({ jobId, bundle: job.configBundle });
+      await orig(job, jobId);
+    };
+    h.deps.dashboardUrl = "http://localhost:3100";
+    return { ...h, jobs };
+  }
+
+  it("resolves persona credentials into the job's configBundle", async () => {
+    const h = personaHarness(true);
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.jobs.length).toBeGreaterThan(0);
+    const headBundle = h.jobs.find((j) => j.jobId.endsWith(":head"))!.bundle as {
+      persona: { name: string; usernameRef: string } | null;
+      secretRefs: Record<string, string>;
+    };
+    expect(headBundle.persona?.name).toBe("default");
+    expect(headBundle.persona?.usernameRef).toBe("sec_u");
+    expect(headBundle.secretRefs["default.password"]).toBe("sec_p");
+    expect(h.store.verdicts[0]!.verdict).toBe("passing");
+  });
+
+  it("missing credentials → flow not executed, 🟣 env_issue with the credentials link", async () => {
+    const h = personaHarness(false);
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.jobs).toHaveLength(0); // nothing enqueued for either target
+    expect(h.store.verdicts[0]!.verdict).toBe("env_issue");
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain("🟣 env issue");
+    expect(comment).toContain("PR-scoped credentials");
+    expect(comment).toContain("/flowguard rerun");
+    expect(comment).toContain("http://localhost:3100/projects/prj_1?pr=7");
+  });
+});

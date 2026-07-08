@@ -19,6 +19,7 @@ import type { GithubAppClient } from "@flowguard/github";
 import type { Store } from "../store.js";
 import { splitRepo } from "../handlers/deps.js";
 import { compareFlow, type ArtifactLinker } from "./comparator.js";
+import { buildConfigBundle, MissingCredentialsError } from "./config-bundle.js";
 
 /**
  * The run state machine (doc 06 §3), Phase 3 scope:
@@ -57,6 +58,8 @@ export interface OrchestratorDeps {
   /** Signal the runner to abort between steps (doc 01 §6). */
   setAbortKey: (runId: string) => Promise<void>;
   artifactLink: ArtifactLinker;
+  /** For 🟣 login_failed rows: where to enter PR-scoped credentials (doc 07 §3). */
+  dashboardUrl?: string;
   flowJobTimeoutMs?: number;
 }
 
@@ -139,24 +142,58 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       ? await deps.resolveSecret(project.vercelBypassSecretRef)
       : null;
     const timeoutMs = deps.flowJobTimeoutMs ?? 300_000;
+    // by convention the flow named "Login" establishes persona sessions (doc 07 §5)
+    const loginSpec = flowList.find((f) => f.flowName.toLowerCase() === "login")?.spec ?? null;
 
     interface FlowPlan {
       flowId: string;
       flowName: string;
       specVersionId: string;
       spec: (typeof flowList)[number]["spec"];
-      headJobId: string;
+      headJobId: string | null;
       baseJobId: string | null;
       cachedBase: RunFlowResult | null;
+      /** synthesized without execution (e.g. missing credentials) */
+      syntheticHead: RunFlowResult | null;
     }
+
+    const enqueueTarget = async (
+      f: (typeof flowList)[number],
+      target: "head" | "base",
+      deploymentUrl: string,
+      sha: string,
+      deploymentId: string,
+    ): Promise<{ jobId: string | null; synthetic: RunFlowResult | null }> => {
+      try {
+        const configBundle = await buildConfigBundle(
+          {
+            store,
+            projectId: project.id,
+            prNumber: target === "head" ? pr.number : null,
+            deploymentId,
+            loginSpec: f.flowName.toLowerCase() === "login" ? null : loginSpec,
+          },
+          f.spec,
+        );
+        const jobId = `${runId}:${f.flowId}:${target}`;
+        await deps.enqueueFlowJob(
+          buildJob(runId, f, target, deploymentUrl, sha, bypassSecret, deploymentId, configBundle),
+          jobId,
+        );
+        return { jobId, synthetic: null };
+      } catch (err) {
+        if (err instanceof MissingCredentialsError) {
+          logger.warn({ flow: f.flowId, persona: err.persona, target }, "no credentials — flow not executed");
+          return { jobId: null, synthetic: syntheticLoginFailure(runId, f, target, err.message) };
+        }
+        throw err;
+      }
+    };
+
     const plans: FlowPlan[] = [];
     let cacheHits = 0;
     for (const f of flowList) {
-      const headJobId = `${runId}:${f.flowId}:head`;
-      await deps.enqueueFlowJob(
-        buildJob(runId, f, "head", headDeployment.url, run.headSha, bypassSecret),
-        headJobId,
-      );
+      const headRes = await enqueueTarget(f, "head", headDeployment.url, run.headSha, headDeployment.id);
       let baseJobId: string | null = null;
       let cachedBase: RunFlowResult | null = null;
       if (baseDeployment) {
@@ -165,20 +202,23 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           cachedBase = cached.result;
           cacheHits++;
         } else {
-          baseJobId = `${runId}:${f.flowId}:base`;
-          await deps.enqueueFlowJob(
-            buildJob(runId, f, "base", baseDeployment.url, mergeBaseSha, bypassSecret),
-            baseJobId,
-          );
+          const baseRes = await enqueueTarget(f, "base", baseDeployment.url, mergeBaseSha, baseDeployment.id);
+          baseJobId = baseRes.jobId;
         }
       }
-      plans.push({ ...f, headJobId, baseJobId, cachedBase });
+      plans.push({
+        ...f,
+        headJobId: headRes.jobId,
+        baseJobId,
+        cachedBase,
+        syntheticHead: headRes.synthetic,
+      });
     }
 
     const headStart = Date.now();
     const outcomes = await Promise.all(
       plans.map(async (p) => {
-        const head = await deps.awaitFlowResult(p.headJobId, timeoutMs);
+        const head = p.syntheticHead ?? (await deps.awaitFlowResult(p.headJobId!, timeoutMs));
         const base = p.baseJobId ? await deps.awaitFlowResult(p.baseJobId, timeoutMs) : p.cachedBase;
         return { plan: p, head, base };
       }),
@@ -228,6 +268,9 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         base: o.base,
         baseAvailable: Boolean(baseDeployment),
         link: deps.artifactLink,
+        credentialsUrl: deps.dashboardUrl
+          ? `${deps.dashboardUrl}/projects/${project.id}?pr=${pr.number}`
+          : undefined,
       });
       kinds.push(cmp2.verdict);
       rows.push({
@@ -285,6 +328,8 @@ function buildJob(
   deploymentUrl: string,
   sha: string,
   bypassSecret: string | null,
+  deploymentId: string,
+  configBundle: ExecuteFlowJob["configBundle"],
 ): ExecuteFlowJob {
   return ExecuteFlowJobSchema.parse({
     runId,
@@ -296,12 +341,42 @@ function buildJob(
       deploymentUrl: deploymentUrl.startsWith("http") ? deploymentUrl : `https://${deploymentUrl}`,
       bypassSecret,
       sha,
+      deploymentId,
     },
-    configBundle: { persona: null, payment: null, dataBranchDiffers: false },
+    configBundle,
     mode: "measure",
     collect: { coverage: false, har: true, video: true },
     abortToken: runId,
   });
+}
+
+/** RunFlowResult for a flow that never executed because credentials are missing. */
+function syntheticLoginFailure(
+  runId: string,
+  f: { flowId: string; specVersionId: string },
+  target: "head" | "base",
+  message: string,
+): RunFlowResult {
+  return {
+    runId,
+    flowId: f.flowId,
+    specVersionId: f.specVersionId,
+    target,
+    status: "error",
+    failedStepId: null,
+    failureClass: "login_failed",
+    healAttempt: { attempted: false, succeeded: false, proposedPatch: null },
+    steps: [],
+    perf: { flowTotalMs: 0, regressions: [] },
+    artifacts: { video: null, trace: null, har: null, console: null, coverage: null },
+    diagnostics: {
+      pendingRequestsAtTimeout: [],
+      consoleErrors: [{ text: message }],
+      pageCrashed: false,
+      nextErrorOverlay: false,
+      blankScreenScore: 0,
+    },
+  };
 }
 
 /**

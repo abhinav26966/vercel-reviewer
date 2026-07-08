@@ -21,7 +21,10 @@ export interface AppConfig {
   artifacts?: {
     verifySig: (s3Key: string, sig: string) => boolean;
     presign: (s3Key: string) => Promise<string>;
+    signKey: (s3Key: string) => string;
   };
+  /** Encrypts + stores a plaintext in the vault, returns the sec_* ref. */
+  storeSecret?: (projectId: string, kind: string, plaintext: string) => Promise<string>;
 }
 
 export type ApiApp = ReturnType<typeof buildApp>;
@@ -35,6 +38,110 @@ export function buildApp(config: AppConfig) {
   });
 
   app.get("/healthz", async () => ({ ok: true }));
+
+  // local-dev CORS for the dashboard (org auth arrives in Phase 13)
+  app.addHook("onSend", async (_req, reply) => {
+    reply.header("access-control-allow-origin", "*");
+    reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+    reply.header("access-control-allow-headers", "content-type");
+  });
+  app.options("/*", async (_req, reply) => reply.code(204).send());
+
+  // ── dashboard v0 API (doc 09 Phase 4 task 6) ──────────────────────────────
+  const store = () => config.deps.store;
+
+  app.get("/api/projects", async () => {
+    const projects = await store().listProjects();
+    return projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      githubRepo: p.githubRepo,
+      baseBranches: p.baseBranches,
+    }));
+  });
+
+  app.get("/api/projects/:id/runs", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listRunsForProject(id, 30);
+  });
+
+  app.get("/api/runs/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const detail = await store().getRunDetail(id);
+    if (!detail) return reply.code(404).send({ error: "run not found" });
+    // pre-signed artifact links for the viewer
+    const sign = config.artifacts?.signKey;
+    return {
+      ...detail,
+      results: detail.results.map((r) => ({
+        ...r,
+        artifactLinks: sign
+          ? Object.fromEntries(
+              Object.entries(r.artifacts)
+                .filter(([, v]) => v)
+                .map(([k, v]) => [k, `/artifacts?key=${encodeURIComponent(v!)}&sig=${sign(v!)}`]),
+            )
+          : {},
+      })),
+    };
+  });
+
+  app.get("/api/projects/:id/credentials", async (req) => {
+    const { id } = req.params as { id: string };
+    const sets = await store().listCredentialSets(id);
+    // never return secret refs to the browser — display metadata only
+    return sets.map((s) => ({
+      id: s.id,
+      scope: s.scope,
+      prNumber: s.prNumber,
+      persona: s.persona,
+      usernameLast4: s.usernameLast4 ?? null,
+      dataBranchDiffers: s.dataBranchDiffers,
+    }));
+  });
+
+  app.post("/api/projects/:id/credentials", async (req, reply) => {
+    if (!config.storeSecret) return reply.code(500).send({ error: "vault not configured" });
+    const { id: projectId } = req.params as { id: string };
+    let body: {
+      scope?: string;
+      prNumber?: number;
+      persona?: string;
+      username?: string;
+      password?: string;
+      dataBranchDiffers?: boolean;
+    };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    const { scope, persona, username, password } = body;
+    if ((scope !== "project" && scope !== "pr") || !persona || !username || !password) {
+      return reply.code(400).send({ error: "scope(project|pr), persona, username, password are required" });
+    }
+    if (scope === "pr" && typeof body.prNumber !== "number") {
+      return reply.code(400).send({ error: "prNumber is required for pr-scoped credentials" });
+    }
+    const usernameSecretId = await config.storeSecret(projectId, "username", username);
+    const passwordSecretId = await config.storeSecret(projectId, "password", password);
+    const row = await store().createCredentialSet({
+      projectId,
+      scope,
+      prNumber: scope === "pr" ? body.prNumber! : null,
+      persona,
+      usernameSecretId,
+      passwordSecretId,
+      dataBranchDiffers: body.dataBranchDiffers ?? scope === "pr",
+    });
+    return reply.code(201).send({ id: row.id, scope: row.scope, persona: row.persona });
+  });
+
+  app.delete("/api/credentials/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deleted = await store().deleteCredentialSet(id);
+    return reply.code(deleted ? 200 : 404).send({ deleted });
+  });
 
   app.get("/artifacts", async (req, reply) => {
     if (!config.artifacts) return reply.code(404).send({ error: "artifacts not configured" });

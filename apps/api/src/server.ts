@@ -7,7 +7,8 @@ import { createLogger, decryptSecret, parseMasterKey } from "@flowguard/shared";
 import { VercelClient } from "@flowguard/vercel";
 import { buildApp } from "./app.js";
 import { loadEnv } from "./env.js";
-import { artifactLinkBuilder, verifyArtifactSig } from "./orchestrator/artifact-links.js";
+import { encryptSecret } from "@flowguard/shared";
+import { artifactLinkBuilder, signArtifactKey, verifyArtifactSig } from "./orchestrator/artifact-links.js";
 import { orchestrateRun, type OrchestratorDeps } from "./orchestrator/orchestrate.js";
 import { createQueues } from "./orchestrator/queue.js";
 import { DrizzleStore } from "./store.js";
@@ -50,6 +51,7 @@ const orchestratorDeps: OrchestratorDeps = {
   removeQueuedJob: queues.removeQueuedJob,
   setAbortKey: queues.setAbortKey,
   artifactLink: artifactLinkBuilder(env.PUBLIC_API_URL, masterKey),
+  dashboardUrl: env.PUBLIC_DASHBOARD_URL,
 };
 
 queues.startOrchestrateWorker((runId) => orchestrateRun(orchestratorDeps, runId));
@@ -59,8 +61,20 @@ const app = buildApp({
   logger,
   artifacts: {
     verifySig: (key, sig) => verifyArtifactSig(key, sig, masterKey),
+    signKey: (key) => signArtifactKey(key, masterKey),
     presign: (key) =>
       getSignedUrl(s3, new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }), { expiresIn: 300 }),
+  },
+  storeSecret: async (projectId, kind, plaintext) => {
+    const enc = encryptSecret(plaintext, masterKey);
+    return store.createSecret({
+      projectId,
+      kind,
+      ciphertext: enc.ciphertext,
+      dekWrapped: enc.dekWrapped,
+      kmsKeyId: enc.kmsKeyId,
+      last4: kind === "password" ? null : plaintext.slice(-4),
+    });
   },
   deps: {
     store,

@@ -1,6 +1,13 @@
 import { pino } from "pino";
 import type { FlowSpec, RunFlowResult, VerdictKind } from "@flowguard/schemas";
-import type { Store, ProjectRow, DeploymentRow, PullRequestRow, RunRow } from "../src/store.js";
+import type {
+  Store,
+  ProjectRow,
+  DeploymentRow,
+  PullRequestRow,
+  RunRow,
+  CredentialSetRow,
+} from "../src/store.js";
 import type { HandlerDeps } from "../src/handlers/deps.js";
 
 export class FakeStore implements Store {
@@ -278,6 +285,129 @@ export class FakeStore implements Store {
 
   async countRunsForPr(prId: string): Promise<number> {
     return this.runs.filter((r) => r.prId === prId && r.kind === "pr").length;
+  }
+
+  // ── credentials & sessions (Phase 4) ────────────────────────────────────
+  secrets: Array<{ id: string; projectId: string; kind: string; last4: string | null }> = [];
+  credentialSets: Array<CredentialSetRow & { expiresAt: Date | null }> = [];
+  sessionKeys = new Map<string, string>(); // `${persona}:${deploymentId}` → s3Key
+
+  async createSecret(input: {
+    projectId: string;
+    kind: string;
+    ciphertext: Buffer;
+    dekWrapped: Buffer;
+    kmsKeyId: string;
+    last4: string | null;
+  }): Promise<string> {
+    const id = this.id("sec");
+    this.secrets.push({ id, projectId: input.projectId, kind: input.kind, last4: input.last4 });
+    return id;
+  }
+
+  async createCredentialSet(
+    input: Omit<CredentialSetRow, "id" | "usernameLast4">,
+  ): Promise<CredentialSetRow> {
+    this.credentialSets = this.credentialSets.filter(
+      (c) =>
+        !(
+          c.projectId === input.projectId &&
+          c.scope === input.scope &&
+          c.prNumber === input.prNumber &&
+          c.persona === input.persona
+        ),
+    );
+    const row = { id: this.id("crd"), ...input, expiresAt: null };
+    this.credentialSets.push(row);
+    return row;
+  }
+
+  async listCredentialSets(projectId: string): Promise<CredentialSetRow[]> {
+    return this.credentialSets.filter((c) => c.projectId === projectId);
+  }
+
+  async deleteCredentialSet(id: string): Promise<boolean> {
+    const before = this.credentialSets.length;
+    this.credentialSets = this.credentialSets.filter((c) => c.id !== id);
+    return this.credentialSets.length < before;
+  }
+
+  async resolveCredentialSet(
+    projectId: string,
+    persona: string,
+    prNumber: number | null,
+  ): Promise<CredentialSetRow | null> {
+    const live = (c: { expiresAt: Date | null }) => c.expiresAt === null || c.expiresAt > new Date();
+    if (prNumber !== null) {
+      const pr = this.credentialSets.find(
+        (c) =>
+          c.projectId === projectId &&
+          c.scope === "pr" &&
+          c.prNumber === prNumber &&
+          c.persona === persona &&
+          live(c),
+      );
+      if (pr) return pr;
+    }
+    return (
+      this.credentialSets.find(
+        (c) => c.projectId === projectId && c.scope === "project" && c.persona === persona && live(c),
+      ) ?? null
+    );
+  }
+
+  async expirePrScopedCredentials(projectId: string, prNumber: number): Promise<number> {
+    let n = 0;
+    for (const c of this.credentialSets) {
+      if (c.projectId === projectId && c.scope === "pr" && c.prNumber === prNumber) {
+        c.expiresAt = new Date(Date.now() - 1);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  async getSessionStateKey(persona: string, deploymentId: string): Promise<string | null> {
+    return this.sessionKeys.get(`${persona}:${deploymentId}`) ?? null;
+  }
+
+  // ── dashboard v0 reads ──────────────────────────────────────────────────
+  async listProjects(): Promise<ProjectRow[]> {
+    return this.projects;
+  }
+
+  async listRunsForProject(projectId: string, limit: number) {
+    return this.runs
+      .filter((r) => r.projectId === projectId)
+      .slice(-limit)
+      .reverse()
+      .map((r) => ({
+        ...r,
+        prNumber: this.pullRequests.find((p) => p.id === r.prId)?.number ?? null,
+      }));
+  }
+
+  async getRunDetail(runId: string) {
+    const run = await this.getRunById(runId);
+    if (!run) return null;
+    return {
+      run,
+      results: this.runFlowResults
+        .filter((r) => r.runId === runId)
+        .map((r) => ({
+          id: r.id,
+          flowId: r.flowId,
+          target: r.target as string,
+          status: r.result.status,
+          failureClass: r.result.failureClass,
+          failedStepId: r.result.failedStepId,
+          fromCache: r.fromCache,
+          artifacts: r.result.artifacts,
+        })),
+      verdicts: this.verdicts
+        .filter((v) => v.runId === runId)
+        .map((v) => ({ flowId: v.flowId, verdict: v.verdict as string, humanCopy: v.humanCopy })),
+    };
   }
 }
 

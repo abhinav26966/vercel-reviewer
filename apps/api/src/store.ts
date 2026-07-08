@@ -2,6 +2,7 @@ import { and, count, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
   baseResultCache,
+  credentialSets,
   deployments,
   flowSpecVersions,
   flows,
@@ -10,6 +11,8 @@ import {
   pullRequests,
   runFlowResults,
   runs,
+  secrets,
+  sessionStates,
   verdicts,
   webhookDeliveries,
 } from "@flowguard/db";
@@ -50,6 +53,18 @@ export interface PullRequestRow {
   state: string;
   baseBranch: string;
   stickyCommentId: number | null;
+}
+
+export interface CredentialSetRow {
+  id: string;
+  projectId: string;
+  scope: "project" | "pr";
+  prNumber: number | null;
+  persona: string;
+  usernameSecretId: string;
+  passwordSecretId: string;
+  dataBranchDiffers: boolean;
+  usernameLast4?: string | null;
 }
 
 export interface RunRow {
@@ -169,6 +184,60 @@ export interface Store {
   listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]>;
   markSuperseded(runId: string, byRunId: string): Promise<void>;
   countRunsForPr(prId: string): Promise<number>;
+
+  // ── credentials & sessions (Phase 4) ────────────────────────────────────
+  createSecret(input: {
+    projectId: string;
+    kind: string;
+    ciphertext: Buffer;
+    dekWrapped: Buffer;
+    kmsKeyId: string;
+    last4: string | null;
+  }): Promise<string>;
+  createCredentialSet(input: {
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    persona: string;
+    usernameSecretId: string;
+    passwordSecretId: string;
+    dataBranchDiffers: boolean;
+  }): Promise<CredentialSetRow>;
+  listCredentialSets(projectId: string): Promise<CredentialSetRow[]>;
+  deleteCredentialSet(id: string): Promise<boolean>;
+  /**
+   * Per-TARGET resolution (doc 07 §3): head → PR scope then project defaults;
+   * base → project defaults always (pass prNumber=null). Expired sets excluded.
+   */
+  resolveCredentialSet(
+    projectId: string,
+    persona: string,
+    prNumber: number | null,
+  ): Promise<CredentialSetRow | null>;
+  /** On PR close/merge: PR-scoped credentials expire (doc 07 §3). */
+  expirePrScopedCredentials(projectId: string, prNumber: number): Promise<number>;
+  getSessionStateKey(persona: string, deploymentId: string): Promise<string | null>;
+
+  // ── dashboard v0 reads ──────────────────────────────────────────────────
+  listProjects(): Promise<ProjectRow[]>;
+  listRunsForProject(
+    projectId: string,
+    limit: number,
+  ): Promise<Array<RunRow & { prNumber: number | null }>>;
+  getRunDetail(runId: string): Promise<{
+    run: RunRow;
+    results: Array<{
+      id: string;
+      flowId: string;
+      target: string;
+      status: string;
+      failureClass: string | null;
+      failedStepId: string | null;
+      fromCache: boolean;
+      artifacts: Record<string, string | null>;
+    }>;
+    verdicts: Array<{ flowId: string; verdict: string; humanCopy: string }>;
+  } | null>;
 }
 
 const OPEN_RUN_STATES = [
@@ -592,5 +661,221 @@ export class DrizzleStore implements Store {
       .from(runs)
       .where(and(eq(runs.prId, prId), eq(runs.kind, "pr")));
     return rows[0]?.n ?? 0;
+  }
+
+  // ── credentials & sessions (Phase 4) ────────────────────────────────────
+
+  async createSecret(input: {
+    projectId: string;
+    kind: string;
+    ciphertext: Buffer;
+    dekWrapped: Buffer;
+    kmsKeyId: string;
+    last4: string | null;
+  }): Promise<string> {
+    const id = newId("secret");
+    await this.db.insert(secrets).values({ id, ...input });
+    return id;
+  }
+
+  async createCredentialSet(input: {
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    persona: string;
+    usernameSecretId: string;
+    passwordSecretId: string;
+    dataBranchDiffers: boolean;
+  }): Promise<CredentialSetRow> {
+    // replace an existing set for the same (project, scope, prNumber, persona)
+    const existing = await this.db
+      .select()
+      .from(credentialSets)
+      .where(
+        and(
+          eq(credentialSets.projectId, input.projectId),
+          eq(credentialSets.scope, input.scope),
+          input.prNumber === null
+            ? isNull(credentialSets.prNumber)
+            : eq(credentialSets.prNumber, input.prNumber),
+          eq(credentialSets.persona, input.persona),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      await this.db.delete(credentialSets).where(eq(credentialSets.id, existing[0].id));
+    }
+    const id = newId("credentialSet");
+    await this.db.insert(credentialSets).values({ id, ...input, expiresAt: null });
+    return { id, ...input };
+  }
+
+  async listCredentialSets(projectId: string): Promise<CredentialSetRow[]> {
+    const rows = await this.db
+      .select({
+        id: credentialSets.id,
+        projectId: credentialSets.projectId,
+        scope: credentialSets.scope,
+        prNumber: credentialSets.prNumber,
+        persona: credentialSets.persona,
+        usernameSecretId: credentialSets.usernameSecretId,
+        passwordSecretId: credentialSets.passwordSecretId,
+        dataBranchDiffers: credentialSets.dataBranchDiffers,
+        usernameLast4: secrets.last4,
+      })
+      .from(credentialSets)
+      .leftJoin(secrets, eq(credentialSets.usernameSecretId, secrets.id))
+      .where(eq(credentialSets.projectId, projectId));
+    return rows as CredentialSetRow[];
+  }
+
+  async deleteCredentialSet(id: string): Promise<boolean> {
+    const deleted = await this.db
+      .delete(credentialSets)
+      .where(eq(credentialSets.id, id))
+      .returning({ id: credentialSets.id });
+    return deleted.length > 0;
+  }
+
+  async resolveCredentialSet(
+    projectId: string,
+    persona: string,
+    prNumber: number | null,
+  ): Promise<CredentialSetRow | null> {
+    const notExpired = (row: { expiresAt: Date | null }) =>
+      row.expiresAt === null || row.expiresAt > new Date();
+    if (prNumber !== null) {
+      const prScoped = await this.db
+        .select()
+        .from(credentialSets)
+        .where(
+          and(
+            eq(credentialSets.projectId, projectId),
+            eq(credentialSets.scope, "pr"),
+            eq(credentialSets.prNumber, prNumber),
+            eq(credentialSets.persona, persona),
+          ),
+        )
+        .limit(1);
+      if (prScoped[0] && notExpired(prScoped[0])) return prScoped[0] as CredentialSetRow;
+    }
+    const projectScoped = await this.db
+      .select()
+      .from(credentialSets)
+      .where(
+        and(
+          eq(credentialSets.projectId, projectId),
+          eq(credentialSets.scope, "project"),
+          eq(credentialSets.persona, persona),
+        ),
+      )
+      .limit(1);
+    if (projectScoped[0] && notExpired(projectScoped[0])) return projectScoped[0] as CredentialSetRow;
+    return null;
+  }
+
+  async expirePrScopedCredentials(projectId: string, prNumber: number): Promise<number> {
+    const updated = await this.db
+      .update(credentialSets)
+      .set({ expiresAt: new Date() })
+      .where(
+        and(
+          eq(credentialSets.projectId, projectId),
+          eq(credentialSets.scope, "pr"),
+          eq(credentialSets.prNumber, prNumber),
+        ),
+      )
+      .returning({ id: credentialSets.id });
+    return updated.length;
+  }
+
+  async getSessionStateKey(persona: string, deploymentId: string): Promise<string | null> {
+    const rows = await this.db
+      .select({ s3Key: sessionStates.s3Key })
+      .from(sessionStates)
+      .where(and(eq(sessionStates.persona, persona), eq(sessionStates.deploymentId, deploymentId)))
+      .limit(1);
+    return rows[0]?.s3Key ?? null;
+  }
+
+  // ── dashboard v0 reads ──────────────────────────────────────────────────
+
+  async listProjects(): Promise<ProjectRow[]> {
+    const rows = await this.db
+      .select({
+        id: projects.id,
+        name: projects.name,
+        githubRepo: projects.githubRepo,
+        installationId: githubInstallations.installationId,
+        vercelProjectId: projects.vercelProjectId,
+        vercelTeamId: projects.vercelTeamId,
+        vercelTokenRef: projects.vercelTokenRef,
+        vercelBypassSecretRef: projects.vercelBypassSecretRef,
+        baseBranches: projects.baseBranches,
+      })
+      .from(projects)
+      .leftJoin(githubInstallations, eq(projects.githubInstallationId, githubInstallations.id));
+    return rows;
+  }
+
+  async listRunsForProject(projectId: string, limit: number) {
+    const rows = await this.db
+      .select({
+        id: runs.id,
+        projectId: runs.projectId,
+        kind: runs.kind,
+        state: runs.state,
+        prId: runs.prId,
+        headSha: runs.headSha,
+        headDeploymentId: runs.headDeploymentId,
+        branch: runs.branch,
+        prNumber: pullRequests.number,
+      })
+      .from(runs)
+      .leftJoin(pullRequests, eq(runs.prId, pullRequests.id))
+      .where(eq(runs.projectId, projectId))
+      .orderBy(desc(runs.createdAt))
+      .limit(limit);
+    return rows as Array<RunRow & { prNumber: number | null }>;
+  }
+
+  async getRunDetail(runId: string) {
+    const run = await this.getRunById(runId);
+    if (!run) return null;
+    const results = await this.db
+      .select({
+        id: runFlowResults.id,
+        flowId: runFlowResults.flowId,
+        target: runFlowResults.target,
+        status: runFlowResults.status,
+        failureClass: runFlowResults.failureClass,
+        failedStepId: runFlowResults.failedStepId,
+        fromCache: runFlowResults.fromCache,
+        artifacts: runFlowResults.artifacts,
+      })
+      .from(runFlowResults)
+      .where(eq(runFlowResults.runId, runId));
+    const verdictRows = await this.db
+      .select({ flowId: verdicts.flowId, verdict: verdicts.verdict, humanCopy: verdicts.humanCopy })
+      .from(verdicts)
+      .where(eq(verdicts.runId, runId));
+    return {
+      run,
+      results: results.map((r) => ({
+        id: r.id,
+        flowId: r.flowId ?? "",
+        target: r.target,
+        status: r.status,
+        failureClass: r.failureClass,
+        failedStepId: r.failedStepId,
+        fromCache: r.fromCache,
+        artifacts: (r.artifacts ?? {}) as Record<string, string | null>,
+      })),
+      verdicts: verdictRows.map((v) => ({
+        flowId: v.flowId ?? "",
+        verdict: v.verdict,
+        humanCopy: v.humanCopy,
+      })),
+    };
   }
 }

@@ -8,10 +8,14 @@ A runner process receives one `ExecuteFlowJob` (the job also embeds the full `sp
 {
   "runId": "run_x", "flowId": "flw_9f2c", "specVersionId": "fsv_12",
   "spec": { /* full Flow Spec, doc 02 §2 */ },
-  "target": { "kind": "head", "deploymentUrl": "https://app-git-feat-x.vercel.app", "bypassSecret": "…", "sha": "def456" },
+  "target": { "kind": "head", "deploymentUrl": "https://app-git-feat-x.vercel.app", "bypassSecret": "…", "sha": "def456",
+              "deploymentId": "dep_123" },   // keys the storageState cache
   "configBundle": {                       // resolved by orchestrator per TARGET (doc 07 §3)
-    "persona": { "name": "premium_user", "usernameRef": "sec_1", "passwordRef": "sec_2", "storageStateKey": "ss/prj_a1/premium_user/dep_123.json" },
+    "persona": { "name": "premium_user", "usernameRef": "sec_1", "passwordRef": "sec_2", "storageStateKey": "ss/prj_a1/premium_user/dep_123.json",
+                 "loginSpec": null },     // project Login flow, executed once per (persona, deployment) in a
+                                          // throwaway context with NO artifact collection when no cached session exists
     "payment": { "provider": "stripe", "cardRef": "sec_9", "expiry": "12/34", "cvcRef": "sec_10", "source": "project" },
+    "secretRefs": { "default.password": "sec_2" },  // {{secret:*}} placeholder → ref map, pre-resolved per target
     "dataBranchDiffers": true             // head uses a different DB than base → passed to judge
   },
   "mode": "measure",                      // warmup | measure | validate | explore
@@ -38,7 +42,7 @@ For each step:
    - DOM actions: try locator stack in order (per-locator timeout ~2.5s, total step locate budget ~8s). Playwright auto-waits handle actionability.
    - `canvasClick`: resolve canvas box → absolute point from normalized coords → `page.mouse.click`. If `point` null or a later assertion fails and retry policy allows: **vision grounding** — screenshot + `visionFallback.describe` → `groundElement()` → click returned coords if confidence ≥ 0.6, else fail `grounding_failed`.
    - `payment`: run the provider module (doc 07 §5): live-mode guard → frameLocator fills → 3DS modal handling for `card_3ds`.
-   - `type`: values may contain `{{secret:*}}` placeholders → substituted at keystroke time; never materialized in any string that gets logged.
+   - `type`: values may contain `{{secret:*}}` placeholders → substituted at keystroke time via CDP `Input.insertText` (invisible to Playwright tracing, so the plaintext never enters trace.zip); never materialized in any string that gets logged. Tracing is additionally disabled for specs containing secret placeholders (trace network capture could otherwise embed request bodies).
 3. **Settle:** per spec strategy. `animationQuiescence` = capture JPEG frames every `sampleEveryMs`, compare consecutive downscaled grayscale frames (pixelmatch), settled when `stableFrames` consecutive diffs < `diffThresholdPct`; timeout → proceed to post-condition evaluation anyway (the hang classifier decides).
 4. **Assert:** evaluate `postConditions`. `state` reads via `page.evaluate`; `optional:true` state assertions that find no hook are skipped (paired vision assertion covers). `vision` assertions: settle screenshot + question → structured answer → compare.
 5. **Record:** `durationMs = settle_end − t0`, settle time, network entries in window, assertion results, screenshot-after.

@@ -10,6 +10,7 @@ import { createLogger } from "@flowguard/shared";
 import { S3ArtifactStore } from "./artifacts.js";
 import { loadRunnerEnv } from "./config.js";
 import { executeFlow } from "./execute-flow.js";
+import { VaultSecretResolver } from "./secrets.js";
 
 const env = loadRunnerEnv();
 const logger = createLogger({ name: "runner-worker", level: env.LOG_LEVEL });
@@ -24,6 +25,8 @@ const abortClient = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
 
 export const RUNS_QUEUE = "runs";
 
+const secretResolver = process.env.FLOWGUARD_MASTER_KEY ? new VaultSecretResolver() : undefined;
+
 const worker = new Worker(
   RUNS_QUEUE,
   async (bullJob) => {
@@ -33,6 +36,7 @@ const worker = new Worker(
       job,
       logger,
       artifacts: new S3ArtifactStore(env),
+      ...(secretResolver ? { secretResolver } : {}),
       shouldAbort: async () => (await abortClient.exists(`flowguard:abort:${job.runId}`)) === 1,
     });
     logger.info({ runId: job.runId, status: result.status }, "job finished");

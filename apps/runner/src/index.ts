@@ -4,3 +4,7 @@ export * from "./assertions.js";
 export * from "./pw-locators.js";
 export * from "./network-tracker.js";
 export * from "./config.js";
+export * from "./secrets.js";
+export * from "./session.js";
+export * from "./steps.js";
+export * from "./har-redact.js";

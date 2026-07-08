@@ -15,6 +15,12 @@ export const PersonaConfigSchema = z.object({
   passwordRef: z.string().min(1),
   /** Cached storageState S3 key for (persona, deployment); null = login required. */
   storageStateKey: z.string().nullable().default(null),
+  /**
+   * The project's Login flow spec, executed once per (persona, deployment) in a
+   * throwaway context (no video/trace/HAR — secrets never enter flow artifacts)
+   * when no cached storageState exists (doc 07 §5).
+   */
+  loginSpec: z.lazy(() => FlowSpecSchema).nullable().default(null),
 });
 
 export const PaymentBundleSchema = z.object({
@@ -31,6 +37,12 @@ export const PaymentBundleSchema = z.object({
 export const ConfigBundleSchema = z.object({
   persona: PersonaConfigSchema.nullable().default(null),
   payment: PaymentBundleSchema.nullable().default(null),
+  /**
+   * Placeholder → secret-reference map for `{{secret:persona.field}}` values in
+   * type actions, pre-resolved per target by the orchestrator (scope hierarchy
+   * lives there; the runner only ever exchanges refs for plaintext).
+   */
+  secretRefs: z.record(z.string(), z.string()).default({}),
   /** head resolved from PR scope (or user-flagged) → passed to runner AND judge. */
   dataBranchDiffers: z.boolean().default(false),
 });
@@ -43,6 +55,8 @@ export const DeploymentTargetSchema = z.object({
   /** Vercel Protection Bypass for Automation secret; null when protection is off. */
   bypassSecret: z.string().nullable().default(null),
   sha: z.string().min(1),
+  /** FlowGuard deployments-row id — keys the storageState cache (doc 07 §5). */
+  deploymentId: z.string().nullable().default(null),
 });
 
 export const RunModeSchema = z.enum(["warmup", "measure", "validate", "explore"]);

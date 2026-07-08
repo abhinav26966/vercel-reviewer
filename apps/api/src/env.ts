@@ -13,6 +13,8 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().default("redis://localhost:6379"),
   /** Base for artifact links in PR comments (Phase 13 makes this a real host). */
   PUBLIC_API_URL: z.string().default("http://localhost:8787"),
+  /** Dashboard base for credential links in 🟣 comment rows. */
+  PUBLIC_DASHBOARD_URL: z.string().default("http://localhost:3100"),
   S3_ENDPOINT: z.string().default("http://localhost:9000"),
   S3_REGION: z.string().default("us-east-1"),
   S3_ACCESS_KEY_ID: z.string().default("minioadmin"),
