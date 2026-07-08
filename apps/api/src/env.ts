@@ -20,6 +20,7 @@ const EnvSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().default("minioadmin"),
   S3_SECRET_ACCESS_KEY: z.string().default("minioadmin"),
   S3_BUCKET: z.string().default("flowguard-artifacts"),
+  S3_RECORDINGS_BUCKET: z.string().default("flowguard-recordings"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

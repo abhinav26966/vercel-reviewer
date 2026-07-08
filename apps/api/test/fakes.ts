@@ -263,6 +263,33 @@ export class FakeStore implements Store {
     this.verdicts = this.verdicts.filter((v) => v.runId !== runId);
   }
 
+  // ── recordings (Phase 5) ────────────────────────────────────────────────
+  recordings: Array<{
+    id: string;
+    projectId: string;
+    flowName: string | null;
+    traceKey: string;
+    origin: string;
+    status: string;
+  }> = [];
+
+  async createRecording(input: {
+    projectId: string;
+    flowName: string | null;
+    traceKey: string;
+    origin: string;
+    status: string;
+  }): Promise<string> {
+    const id = this.id("rec");
+    this.recordings.push({ id, ...input });
+    return id;
+  }
+
+  async setRecordingTraceKey(recordingId: string, traceKey: string): Promise<void> {
+    const r = this.recordings.find((x) => x.id === recordingId);
+    if (r) r.traceKey = traceKey;
+  }
+
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {
     this.baseCache.set(`${specVersionId}:${baseSha}`, resultId);
   }

@@ -46,7 +46,7 @@ Two formats exist. The **Recording Trace** is what the Chrome extension emits (r
 
 Rules: password inputs and any field whose value matches a stored secret are redacted **inside the extension before upload**. Screenshots of password fields are fine (dots render); the trace never contains the plaintext.
 
-Nullability clarifications (schema implementation): `target` is `null` for pure navigation events (no interacted element); `target.a11y` and `target.boundingBox` may be `null` when no AX node / box exists (e.g. canvas internals); `screenshotBefore/After` and `domSnapshotAfter` are `null` when the throttled capturer skipped the event; navigation events may carry `newTab: true` (doc 03 A3).
+Nullability clarifications (schema implementation): `target` is `null` for pure navigation events (no interacted element); `target.a11y` and `target.boundingBox` may be `null` when no AX node / box exists (e.g. canvas internals); `screenshotBefore/After` and `domSnapshotAfter` are `null` when the throttled capturer skipped the event; navigation events may carry `newTab: true` (doc 03 A3). The trace also carries `assertionMarkers: number[]` — timestamps where the user pressed "mark assertion here" (doc 03 A2).
 
 ## 2. Flow Spec (compiler output, runner input)
 

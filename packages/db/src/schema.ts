@@ -198,6 +198,8 @@ export const recordings = pgTable("recordings", {
   id: text("id").primaryKey(),
   projectId: text("project_id").references(() => projects.id),
   flowId: text("flow_id"),
+  /** the user-chosen name captured at record time (compiler uses it, doc 03 B4) */
+  flowName: text("flow_name"),
   /** s3 key of raw bundle */
   traceKey: text("trace_key").notNull(),
   origin: text("origin"),

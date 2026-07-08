@@ -1,0 +1,22 @@
+{
+  "name": "@flowguard/extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.280",
+    "esbuild": "^0.28.1",
+    "playwright": "^1.61.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.9",
+    "@types/node": "^20.19.43"
+  }
+}

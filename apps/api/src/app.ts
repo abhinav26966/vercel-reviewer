@@ -1,6 +1,10 @@
 import Fastify from "fastify";
+import multipart from "@fastify/multipart";
 import type { Logger } from "pino";
 import { verifyWebhookSignature } from "@flowguard/github";
+import { isFlowGuardError } from "@flowguard/shared";
+import { handleDevToolsImport, handleRecordingUpload, type RecordingDeps } from "./recordings/service.js";
+import type { DevToolsRecording } from "./recordings/devtools-import.js";
 import type { HandlerDeps } from "./handlers/deps.js";
 import { handleDeploymentStatus } from "./handlers/deployment-status.js";
 import { handleInstallation } from "./handlers/installation.js";
@@ -25,6 +29,8 @@ export interface AppConfig {
   };
   /** Encrypts + stores a plaintext in the vault, returns the sec_* ref. */
   storeSecret?: (projectId: string, kind: string, plaintext: string) => Promise<string>;
+  /** Recording bundle persistence (S3 put); absent in some tests. */
+  recordings?: Pick<RecordingDeps, "putObject">;
 }
 
 export type ApiApp = ReturnType<typeof buildApp>;
@@ -36,6 +42,7 @@ export function buildApp(config: AppConfig) {
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
     done(null, body);
   });
+  void app.register(multipart, { limits: { fileSize: 100 * 1024 * 1024 } });
 
   app.get("/healthz", async () => ({ ok: true }));
 
@@ -141,6 +148,64 @@ export function buildApp(config: AppConfig) {
     const { id } = req.params as { id: string };
     const deleted = await store().deleteCredentialSet(id);
     return reply.code(deleted ? 200 : 404).send({ deleted });
+  });
+
+  // ── recordings (doc 03: extension upload + DevTools import) ──────────────
+  app.post("/api/recordings", async (req, reply) => {
+    if (!config.recordings) return reply.code(500).send({ error: "recordings not configured" });
+    // token auth is org-level in Phase 13; for now require SOME bearer token
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      return reply.code(401).send({ error: "missing bearer token" });
+    }
+    const fields: Record<string, string> = {};
+    let bundle: Buffer | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === "file" && part.fieldname === "bundle") {
+        bundle = await part.toBuffer();
+      } else if (part.type === "field") {
+        fields[part.fieldname] = String(part.value);
+      }
+    }
+    if (!bundle || !fields["projectId"]) {
+      return reply.code(400).send({ error: "projectId field and bundle file are required" });
+    }
+    try {
+      const result = await handleRecordingUpload(
+        { store: config.deps.store, putObject: config.recordings.putObject },
+        { projectId: fields["projectId"], flowName: fields["flowName"] ?? null, bundle },
+      );
+      return reply.code(201).send(result);
+    } catch (err) {
+      if (isFlowGuardError(err) && err.code === "validation_failed") {
+        return reply.code(422).send({ error: err.message, details: err.details });
+      }
+      throw err;
+    }
+  });
+
+  app.post("/api/recordings/import-devtools", async (req, reply) => {
+    if (!config.recordings) return reply.code(500).send({ error: "recordings not configured" });
+    let body: { projectId?: string; flowName?: string; recording?: DevToolsRecording };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (!body.projectId || !body.recording) {
+      return reply.code(400).send({ error: "projectId and recording are required" });
+    }
+    try {
+      const result = await handleDevToolsImport(
+        { store: config.deps.store, putObject: config.recordings.putObject },
+        { projectId: body.projectId, flowName: body.flowName ?? null, recording: body.recording },
+      );
+      return reply.code(201).send(result);
+    } catch (err) {
+      if (isFlowGuardError(err) && err.code === "validation_failed") {
+        return reply.code(422).send({ error: err.message, details: err.details });
+      }
+      throw err;
+    }
   });
 
   app.get("/artifacts", async (req, reply) => {

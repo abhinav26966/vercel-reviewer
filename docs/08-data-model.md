@@ -85,6 +85,7 @@ CREATE UNIQUE INDEX one_official_per_flow_branch ON flow_spec_versions (flow_id,
 
 CREATE TABLE recordings (
   id text PRIMARY KEY, project_id text REFERENCES projects, flow_id text,
+  flow_name text,                               -- user-chosen name captured at record time
   trace_key text NOT NULL,                      -- s3 key of raw bundle
   origin text, status text NOT NULL             -- 'uploaded'|'compiling'|'compiled'|'failed'
 );

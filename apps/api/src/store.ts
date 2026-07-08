@@ -9,6 +9,7 @@ import {
   githubInstallations,
   projects,
   pullRequests,
+  recordings,
   runFlowResults,
   runs,
   secrets,
@@ -178,6 +179,16 @@ export interface Store {
   }): Promise<void>;
   /** Reruns replace a run's verdicts wholesale. */
   deleteVerdictsForRun(runId: string): Promise<void>;
+
+  // ── recordings (Phase 5) ────────────────────────────────────────────────
+  createRecording(input: {
+    projectId: string;
+    flowName: string | null;
+    traceKey: string;
+    origin: string;
+    status: string;
+  }): Promise<string>;
+  setRecordingTraceKey(recordingId: string, traceKey: string): Promise<void>;
   /**
    * In-flight runs for the same PR created BEFORE the given run (a newer
    * deployment supersedes older runs — never the reverse, even when webhook
@@ -620,6 +631,30 @@ export class DrizzleStore implements Store {
 
   async deleteVerdictsForRun(runId: string): Promise<void> {
     await this.db.delete(verdicts).where(eq(verdicts.runId, runId));
+  }
+
+  async createRecording(input: {
+    projectId: string;
+    flowName: string | null;
+    traceKey: string;
+    origin: string;
+    status: string;
+  }): Promise<string> {
+    const id = newId("recording");
+    await this.db.insert(recordings).values({
+      id,
+      projectId: input.projectId,
+      flowId: null, // linked when the compiled flow is created (Phase 6)
+      flowName: input.flowName,
+      traceKey: input.traceKey,
+      origin: input.origin,
+      status: input.status,
+    });
+    return id;
+  }
+
+  async setRecordingTraceKey(recordingId: string, traceKey: string): Promise<void> {
+    await this.db.update(recordings).set({ traceKey }).where(eq(recordings.id, recordingId));
   }
 
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {

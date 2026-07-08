@@ -2,7 +2,48 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 4 — Credentials, sessions, redaction — ✅ AC PASSED (2026-07-08)**; next up: Phase 5 — Recorder extension
+## Current phase: **Phase 5 — Recorder extension + DevTools import — ✅ AC PASSED (2026-07-08)**; next up: Phase 6 — Compiler
+
+### Phase 5 AC evidence (recording `rec_mkc6y6m0ljd40f`)
+
+Recorded the FULL buy&rip journey on the mock-payments preview using the real
+MV3 extension loaded into Playwright (chrome.debugger attached alongside
+Playwright's CDP — **not degraded**):
+
+- journey: login (2 inputs + 3 clicks) → /shop nav → buy click → /shop/success →
+  inventory link (SPA nav captured via Page.navigatedWithinDocument) → /open →
+  **canvas click with normalized coords {nx:0.5014, ny:0.5013}** and
+  `POST /api/packs/open→200` in its network window. 15 events, 17 bundle files.
+- uploaded via POST /api/recordings → unzipped, **Zod-validated**, stored in
+  flowguard-recordings, recordings row created (invalid bundles 422 — unit-tested).
+- every click step carries ≥2 locators (testid → role+name → text/placeholder → css).
+- typed password appears as `«redacted:password»`; zero `demo1234` bytes in the
+  trace (extension-side redaction, doc 07 §4.6).
+- 2 assertion markers captured (popup "mark assertion here").
+- DevTools Recorder export of the same journey imported cleanly via
+  /api/recordings/import-devtools → `rec_1ezizn4but83ug` (8 events; xpath
+  selectors dropped, password field redacted by selector heuristic).
+
+Built: extension/ (MV3: content script with locator stacks + canvas coords +
+redaction; service worker with CDP screenshots/network/navigations + graceful
+degradation when attach fails; popup; fflate zip upload), POST /api/recordings
+(multipart) + import-devtools endpoint, recordings.flow_name column (doc 08
+updated), assertionMarkers on RecordingTrace (doc 02 updated). 11 new tests
+(143 total; extension locator/redaction modules tested in a real chromium page).
+
+### Phase 5 lessons
+
+- chrome.debugger CAN attach alongside Playwright's CDP (multi-client works) —
+  recordings during automation are full-fidelity, and the degraded path exists
+  for the cases where attach is refused.
+- Content scripts reset on every navigation: they must query the service worker
+  for recording state on load, or all post-navigation events vanish.
+- Next.js Link navigations are pushState — Page.frameNavigated misses them;
+  Page.navigatedWithinDocument is required for SPA route changes.
+- A service worker's chrome.runtime.sendMessage never reaches its own listener —
+  drive the extension through the popup page in tests.
+
+## Phase 4 — Credentials, sessions, redaction — ✅ AC PASSED (2026-07-08)
 
 ### Phase 4 AC evidence (live on PR #3)
 
@@ -221,10 +262,13 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 5 — Recorder extension + DevTools import** (doc 09): Chrome MV3
-  extension (popup UI, chrome.debugger service worker, content-script event
-  capture w/ locator stacks + canvas coords, CDP screenshots + a11y + network
-  windows, extension-side redaction), trace upload endpoint, DevTools Recorder
-  JSON import. AC: record buy&rip on the demo app; trace validates against the
-  Zod schema; password appears as «redacted:password».
-- No new founder resources needed (recording happens against the deployed demo).
+- **Phase 6 — Compiler: recording → Flow Spec** (doc 09, doc 03 Part B):
+  packages/inference (visionAnalyze/groundElement/judge behind a provider
+  abstraction — NEEDS A FOUNDER DECISION on the hosted LLM provider + API key),
+  compile job (normalize/segment → locator hardening → per-step vision pass →
+  login/payment/canvas detection → delta rewriting → draft spec +
+  compilationReport, hallucination guard), dashboard compilation review screen,
+  validation run → official. Input ready: `rec_mkc6y6m0ljd40f` (full buy&rip).
+- **Founder input needed**: which LLM provider/key for packages/inference
+  (doc 01 suggests a strong hosted multimodal for compile/judge + a cheap vision
+  model for grounding — an Anthropic API key covers both in v1).

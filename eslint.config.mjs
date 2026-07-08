@@ -10,6 +10,8 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/drizzle/**",
       "**/next-env.d.ts",
+      "extension/test/.locators-bundle.js",
+      "extension/build.mjs",
       "**/*.config.{js,mjs,ts}",
     ],
   },

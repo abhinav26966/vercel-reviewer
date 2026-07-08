@@ -81,6 +81,11 @@ export const RecordingTraceSchema = z.object({
   consoleErrors: z
     .array(z.object({ ts: z.number().nonnegative(), text: z.string() }))
     .default([]),
+  /**
+   * Timestamps (ms from start) where the user pressed "mark assertion here" —
+   * a strong hint for the compiler to mint an assertion at that moment (doc 03 A2).
+   */
+  assertionMarkers: z.array(z.number().nonnegative()).default([]),
 });
 
 export type TraceNetworkEntry = z.infer<typeof TraceNetworkEntrySchema>;
