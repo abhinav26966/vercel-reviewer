@@ -2,29 +2,37 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 1 — Webhook plumbing** (live AC nearly complete — sticky-comment AC PASSED on PR #1; base-run AC awaits founder merging PR #1)
+## Current phase: **Phase 1 — ✅ COMPLETE (2026-07-08)**; next up: Phase 2 — Runner MVP
 
-### Live AC evidence (2026-07-08, PR abhinav26966/vercel-reviewer#1)
+### Phase 1 live AC evidence (PR abhinav26966/vercel-reviewer#1)
 
 - GitHub App `flowguard-dev-abhinav` (id 4237892) installed → installation webhook
   verified through smee → `installation_id 145154076` stored.
 - Project seeded: `prj_862ymcrku4xal4` bound to Vercel `prj_TePAGdlaVuEH9N0WNoDBtYEBvhyp`
-  / `team_rMutuXA9J2h2zIhlsY4pl2EB` (no Vercel token yet — verification fails open).
+  / `team_rMutuXA9J2h2zIhlsY4pl2EB`.
 - PR opened → `awaiting_deployment` run + pending status → Vercel preview success →
   run upgraded to `planning` + **ONE** sticky comment (id 4912456115) with preview URL.
 - Second push → **same comment id edited in place** (`219c88f` → `41b0ff4`), one run
   row per SHA, statuses pending→success per push. Never a second comment. ✅
-- Remaining: founder merges PR #1 → expect `pull_request.closed` to cancel open runs
-  AND main deployment to create a `kind='base'` run row.
+- PR merged → `pull_request.closed` cancelled all 3 open PR runs; PR row `merged`. ✅
+- Main deployment → **base run created** (`run_teq7ghmvw1n2r8, branch=main`). ✅
+  Required a live-found fix: Vercel sends `deployment.ref` = commit SHA (not branch);
+  base membership now resolved via compare API (doc 06 §2 updated).
+- **Protection bypass secret verified live** against the SSO-protected preview
+  (302 without → cookie handshake → 200 with) and stored in the vault; project row
+  `has_bypass=t`.
+- `MOCK_PAYMENTS` split via CLI: Production=0 (real Stripe test mode), Preview=1
+  (SETUP #6 done — replay flows can buy packs on previews pre-Phase-11).
 
-### ⚠️ Needs founder consent (permission-gated, I can't run these)
+### ⏳ One remaining external item (not Phase-blocking)
 
-1. `vercel tokens add flowguard-api` — mint the access token for the project binding
-   (then re-run seed with `--vercel-token`).
-2. Protection Bypass for Automation — **Vercel Authentication is ON for previews**
-   (`all_except_custom_domains`); the Phase 2 runner cannot reach preview URLs
-   without this secret. Generate in dashboard (project → Settings → Deployment
-   Protection) or authorize the API call.
+- **Vercel access token**: CLI minting is refused by Vercel (`403 Cannot create
+  tokens for this app`) — tokens can only be created in the dashboard:
+  https://vercel.com/account/settings/tokens → create → then
+  `pnpm --filter @flowguard/api exec tsx --env-file=.env scripts/seed-project.ts
+  --repo abhinav26966/vercel-reviewer --vercel-project prj_TePAGdlaVuEH9N0WNoDBtYEBvhyp
+  --vercel-team team_rMutuXA9J2h2zIhlsY4pl2EB --vercel-token <TOKEN>`.
+  Needed by Phase 3 (base-deployment lookup via Vercel API); Phase 2 runs without it.
 
 ## Phase 0 — ✅ COMPLETE (2026-07-05)
 
@@ -103,7 +111,11 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- Founder runs SETUP 4–5 → live-test Phase 1 AC (single sticky comment, in-place edit,
-  base run row) → then **Phase 2 — Runner MVP** (doc 09): `apps/runner`, deterministic
-  replay of handwritten login/inventory/rip specs against the real preview, artifacts
-  to MinIO, BullMQ queue.
+- **Phase 2 — Runner MVP** (doc 09): `apps/runner` on the Playwright image,
+  deterministic replay loop (navigate/click/type/press/waitFor, locator stacks,
+  networkidle/navigation/timeout settles, dom/url assertions, one retry, failure
+  bundle), Vercel bypass cookie mode (secret already in vault), artifacts to MinIO,
+  BullMQ `runs` queue + abort tokens, handwritten `login.flow.json` +
+  `inventory.flow.json`, CLI `pnpm flow:run <spec> <url>`.
+- No new founder resources needed for Phase 2 (bypass ✓, MinIO local ✓). The Vercel
+  token (dashboard-only) unblocks Phase 3 base resolution.
