@@ -5,7 +5,11 @@ import { eq } from "drizzle-orm";
 import { createGithubApp, decodePrivateKey } from "@flowguard/github";
 import { createLogger, decryptSecret, parseMasterKey } from "@flowguard/shared";
 import { VercelClient } from "@flowguard/vercel";
+import { createInferenceFromEnv } from "@flowguard/inference";
 import { buildApp } from "./app.js";
+import { compileRecording } from "./compiler/compile.js";
+import { draftFromDescription } from "./compiler/plain-language.js";
+import { validateDraft } from "./compiler/validate.js";
 import { loadEnv } from "./env.js";
 import { encryptSecret } from "@flowguard/shared";
 import { artifactLinkBuilder, signArtifactKey, verifyArtifactSig } from "./orchestrator/artifact-links.js";
@@ -54,7 +58,44 @@ const orchestratorDeps: OrchestratorDeps = {
   dashboardUrl: env.PUBLIC_DASHBOARD_URL,
 };
 
-queues.startOrchestrateWorker((runId) => orchestrateRun(orchestratorDeps, runId));
+const inference = createInferenceFromEnv({
+  logSink: (e) =>
+    logger.info(
+      { capability: e.capability, model: e.usage.model, tokens: e.usage.completionTokens },
+      "inference call",
+    ),
+});
+
+const getRecordingObject = async (key: string): Promise<Buffer> => {
+  const res = await s3.send(new GetObjectCommand({ Bucket: env.S3_RECORDINGS_BUCKET, Key: key }));
+  return Buffer.from(await res.Body!.transformToByteArray());
+};
+
+queues.startOrchestrateWorker(async (job) => {
+  switch (job.kind) {
+    case "run":
+      return orchestrateRun(orchestratorDeps, job.runId);
+    case "compile":
+      await compileRecording(
+        { store, inference, getObject: getRecordingObject, logger: createLogger({ name: "compiler", level: env.LOG_LEVEL }) },
+        job.recordingId,
+      );
+      return;
+    case "validate":
+      await validateDraft(
+        {
+          store,
+          logger: createLogger({ name: "validator", level: env.LOG_LEVEL }),
+          resolveSecret,
+          makeVercelClient: (token, teamId) => new VercelClient({ token, teamId }),
+          enqueueFlowJob: queues.enqueueFlowJob as (job: unknown, jobId: string) => Promise<void>,
+          awaitFlowResult: queues.awaitFlowResult,
+        },
+        job.versionId,
+      );
+      return;
+  }
+});
 
 const app = buildApp({
   webhookSecret: env.GITHUB_WEBHOOK_SECRET,
@@ -76,6 +117,13 @@ const app = buildApp({
         }),
       );
     },
+    getObject: getRecordingObject,
+  },
+  compiler: {
+    enqueueCompile: (recordingId) => queues.enqueueControl({ kind: "compile", recordingId }),
+    enqueueValidate: (versionId) => queues.enqueueControl({ kind: "validate", versionId }),
+    draftFromDescription: (projectId, name, description) =>
+      draftFromDescription({ store, inference }, projectId, name, description),
   },
   storeSecret: async (projectId, kind, plaintext) => {
     const enc = encryptSecret(plaintext, masterKey);

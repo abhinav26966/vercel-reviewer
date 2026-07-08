@@ -114,7 +114,7 @@ export interface Store {
   /** Idempotent on (project, headSha, headDeploymentId, kind). */
   createRun(input: {
     projectId: string;
-    kind: "pr" | "base";
+    kind: "pr" | "base" | "validation" | "nightly";
     state: string;
     prId?: string | null;
     headSha?: string | null;
@@ -189,6 +189,58 @@ export interface Store {
     status: string;
   }): Promise<string>;
   setRecordingTraceKey(recordingId: string, traceKey: string): Promise<void>;
+  getRecording(recordingId: string): Promise<{
+    id: string;
+    projectId: string;
+    flowId: string | null;
+    flowName: string | null;
+    traceKey: string;
+    origin: string | null;
+    status: string;
+  } | null>;
+  updateRecording(
+    recordingId: string,
+    patch: { status?: string; flowId?: string | null },
+  ): Promise<void>;
+  listRecordings(projectId: string): Promise<
+    Array<{ id: string; flowId: string | null; flowName: string | null; status: string; traceKey: string }>
+  >;
+
+  // ── flows & versions (Phase 6) ──────────────────────────────────────────
+  createFlow(input: {
+    id: string;
+    projectId: string;
+    name: string;
+    tier: string;
+    persona: string | null;
+  }): Promise<void>;
+  archiveFlow(flowId: string): Promise<void>;
+  insertFlowVersion(input: {
+    flowId: string;
+    spec: FlowSpec;
+    status: string;
+    branch: string;
+    source: string;
+    sourceRecordingId?: string | null;
+    supersedesVersionId?: string | null;
+    compilationReport?: Record<string, unknown> | null;
+  }): Promise<string>;
+  getFlowVersion(versionId: string): Promise<{
+    id: string;
+    flowId: string;
+    spec: FlowSpec;
+    status: string;
+    branch: string;
+    sourceRecordingId: string | null;
+    compilationReport: Record<string, unknown> | null;
+  } | null>;
+  listDraftVersions(projectId: string): Promise<
+    Array<{ id: string; flowId: string; flowName: string; branch: string; sourceRecordingId: string | null }>
+  >;
+  setVersionStatus(versionId: string, status: string): Promise<void>;
+  /** Promote a version to official; archives the previous official for (flow, branch). */
+  promoteVersionToOfficial(versionId: string): Promise<void>;
+  updateVersionReport(versionId: string, patch: Record<string, unknown>): Promise<void>;
   /**
    * In-flight runs for the same PR created BEFORE the given run (a newer
    * deployment supersedes older runs — never the reverse, even when webhook
@@ -655,6 +707,149 @@ export class DrizzleStore implements Store {
 
   async setRecordingTraceKey(recordingId: string, traceKey: string): Promise<void> {
     await this.db.update(recordings).set({ traceKey }).where(eq(recordings.id, recordingId));
+  }
+
+  async getRecording(recordingId: string) {
+    const rows = await this.db.select().from(recordings).where(eq(recordings.id, recordingId)).limit(1);
+    const r = rows[0];
+    return r
+      ? {
+          id: r.id,
+          projectId: r.projectId!,
+          flowId: r.flowId,
+          flowName: r.flowName,
+          traceKey: r.traceKey,
+          origin: r.origin,
+          status: r.status,
+        }
+      : null;
+  }
+
+  async updateRecording(recordingId: string, patch: { status?: string; flowId?: string | null }): Promise<void> {
+    await this.db.update(recordings).set(patch).where(eq(recordings.id, recordingId));
+  }
+
+  async listRecordings(projectId: string) {
+    const rows = await this.db
+      .select()
+      .from(recordings)
+      .where(eq(recordings.projectId, projectId))
+      .orderBy(desc(recordings.createdAt));
+    return rows.map((r) => ({
+      id: r.id,
+      flowId: r.flowId,
+      flowName: r.flowName,
+      status: r.status,
+      traceKey: r.traceKey,
+    }));
+  }
+
+  // ── flows & versions (Phase 6) ──────────────────────────────────────────
+
+  async createFlow(input: {
+    id: string;
+    projectId: string;
+    name: string;
+    tier: string;
+    persona: string | null;
+  }): Promise<void> {
+    await this.db.insert(flows).values(input);
+  }
+
+  async archiveFlow(flowId: string): Promise<void> {
+    await this.db.update(flows).set({ archived: true }).where(eq(flows.id, flowId));
+  }
+
+  async insertFlowVersion(input: {
+    flowId: string;
+    spec: FlowSpec;
+    status: string;
+    branch: string;
+    source: string;
+    sourceRecordingId?: string | null;
+    supersedesVersionId?: string | null;
+    compilationReport?: Record<string, unknown> | null;
+  }): Promise<string> {
+    const id = newId("flowSpecVersion");
+    await this.db.insert(flowSpecVersions).values({
+      id,
+      flowId: input.flowId,
+      spec: input.spec,
+      status: input.status,
+      branch: input.branch,
+      source: input.source,
+      sourceRecordingId: input.sourceRecordingId ?? null,
+      supersedesVersionId: input.supersedesVersionId ?? null,
+      compilationReport: input.compilationReport ?? null,
+    });
+    return id;
+  }
+
+  async getFlowVersion(versionId: string) {
+    const rows = await this.db
+      .select()
+      .from(flowSpecVersions)
+      .where(eq(flowSpecVersions.id, versionId))
+      .limit(1);
+    const r = rows[0];
+    return r
+      ? {
+          id: r.id,
+          flowId: r.flowId!,
+          spec: r.spec,
+          status: r.status,
+          branch: r.branch,
+          sourceRecordingId: r.sourceRecordingId,
+          compilationReport: r.compilationReport,
+        }
+      : null;
+  }
+
+  async listDraftVersions(projectId: string) {
+    const rows = await this.db
+      .select({
+        id: flowSpecVersions.id,
+        flowId: flowSpecVersions.flowId,
+        flowName: flows.name,
+        branch: flowSpecVersions.branch,
+        sourceRecordingId: flowSpecVersions.sourceRecordingId,
+      })
+      .from(flowSpecVersions)
+      .innerJoin(flows, eq(flowSpecVersions.flowId, flows.id))
+      .where(and(eq(flows.projectId, projectId), eq(flowSpecVersions.status, "draft")))
+      .orderBy(desc(flowSpecVersions.createdAt));
+    return rows.map((r) => ({ ...r, flowId: r.flowId! }));
+  }
+
+  async setVersionStatus(versionId: string, status: string): Promise<void> {
+    await this.db.update(flowSpecVersions).set({ status }).where(eq(flowSpecVersions.id, versionId));
+  }
+
+  async promoteVersionToOfficial(versionId: string): Promise<void> {
+    const version = await this.getFlowVersion(versionId);
+    if (!version) throw new Error(`version not found: ${versionId}`);
+    // archive the previous official/quarantined for (flow, branch) — the partial
+    // unique index allows exactly one current version (doc 08)
+    await this.db
+      .update(flowSpecVersions)
+      .set({ status: "archived" })
+      .where(
+        and(
+          eq(flowSpecVersions.flowId, version.flowId),
+          eq(flowSpecVersions.branch, version.branch),
+          inArray(flowSpecVersions.status, ["official", "quarantined"]),
+        ),
+      );
+    await this.db.update(flowSpecVersions).set({ status: "official" }).where(eq(flowSpecVersions.id, versionId));
+  }
+
+  async updateVersionReport(versionId: string, patch: Record<string, unknown>): Promise<void> {
+    const version = await this.getFlowVersion(versionId);
+    if (!version) return;
+    await this.db
+      .update(flowSpecVersions)
+      .set({ compilationReport: { ...(version.compilationReport ?? {}), ...patch } })
+      .where(eq(flowSpecVersions.id, versionId));
   }
 
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {

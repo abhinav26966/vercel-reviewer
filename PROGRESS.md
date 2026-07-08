@@ -2,7 +2,54 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 5 — Recorder extension + DevTools import — ✅ AC PASSED (2026-07-08)**; next up: Phase 6 — Compiler
+## Current phase: **Phase 6 — Compiler (recording → Flow Spec) — ✅ AC PASSED (2026-07-08)**; next up: Phase 7 — Perf gates + hang/blank/dead
+
+### Phase 6 AC evidence
+
+- (a) **Login replaced with persona**: compiled spec has `persona: "default"`,
+  `startPath: "/shop"`, zero password bytes; report records 4 replaced events.
+- (b) **Human review in <3 min**: dashboard review screen (steps beside their real
+  recorded screenshots, editable titles, assertion checkboxes, needs-attention
+  panel) — confirmed in **2 seconds** via Playwright.
+- (c) **Validates green against base**: confirmed draft `fsv_rb6qxk4wi47wlh` ran
+  against the latest base deployment (persona login-once → buy → inventory →
+  /open → canvasClick at the recorded point) and was **promoted to official**,
+  archiving nothing (new flow) per the partial unique index.
+- (d) **Identical verdicts via Phase 3**: handwritten Inventory + Buy&Rip flows
+  archived; PR #4 ran Login ✅ 4.4s + "Buy & Rip Open a Pack (recorded)" ✅ 8.8s
+  through the unmodified pipeline. PR closed, branch deleted.
+
+Built: packages/inference (OpenAI-compatible provider, model FALLBACK CHAINS for
+free tiers, structured output w/ one repair retry, redacted log sink; defaults =
+free open-weights models on OpenRouter — gemma-4 26B/31B + nemotron-nano-12b-vl),
+compiler pipeline (normalize/segment → code-side login+payment+canvas detection →
+batched vision pass → locator hardening → delta rewriting → assembly with
+hallucination guard), draft/confirm/validate lifecycle (immutable version rows),
+review screen, recordings/drafts/assets endpoints, plain-language authoring
+endpoint (all-needsAttention drafts), runner canvasClick (deterministic half).
+26 new tests (159 total).
+
+### Phase 6 lessons
+
+- **Free-tier vision models flub structured output**: the step-batch pass failed
+  Zod validation even after repair (invented assertion kinds) — and the pipeline
+  degraded exactly as designed: titles from a11y names, assertions from
+  deterministic code (navigation URLs), spec still valid. The trace is ground
+  truth; the model can only add. Prompt tuning for small models is future work.
+- **Native Redis shadowed the Docker one** on 127.0.0.1:6379 the whole time
+  (same as Postgres) — harmless since all services agreed, but debugging queue
+  state requires the NATIVE redis-cli, not docker exec.
+- **Newer BullMQ rejects ':' in custom job ids** — all job ids now use '-'.
+- The compiled canvas step has no assertions (model suggestions failed; DOM can't
+  see into canvas) — Phase 12's vision assertions + state SDK close this.
+- Free-tier budget: full compile of the 15-event recording ≈ 6 requests, $0.
+
+### ⚠️ INFERENCE_API_KEY note
+
+The OpenRouter key was pasted in chat and stored in apps/api/.env. It's a
+free-tier key (no payment method) — rotate at openrouter.ai if concerned.
+
+## Phase 5 — Recorder extension + DevTools import — ✅ AC PASSED (2026-07-08)
 
 ### Phase 5 AC evidence (recording `rec_mkc6y6m0ljd40f`)
 
@@ -262,13 +309,11 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 6 — Compiler: recording → Flow Spec** (doc 09, doc 03 Part B):
-  packages/inference (visionAnalyze/groundElement/judge behind a provider
-  abstraction — NEEDS A FOUNDER DECISION on the hosted LLM provider + API key),
-  compile job (normalize/segment → locator hardening → per-step vision pass →
-  login/payment/canvas detection → delta rewriting → draft spec +
-  compilationReport, hallucination guard), dashboard compilation review screen,
-  validation run → official. Input ready: `rec_mkc6y6m0ljd40f` (full buy&rip).
-- **Founder input needed**: which LLM provider/key for packages/inference
-  (doc 01 suggests a strong hosted multimodal for compile/judge + a cheap vision
-  model for grounding — an Anthropic API key covers both in v1).
+- **Phase 7 — Perf gates + hang/blank/dead classification** (doc 09, doc 04 §4):
+  warm-up run per target (timings discarded), measured medians (n=2),
+  dual-threshold gate + mandatory network/client attribution before any 🟡,
+  hang classifier (pending requests / 5xx+spinner), dead classifier (crash,
+  pageerror, Next error overlay, blank-screen pixel score + vision confirm),
+  base cross-check rule, perf baseline writes. AC includes the sacred
+  20-run zero-flake soak.
+- No new founder resources needed.

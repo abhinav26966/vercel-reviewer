@@ -30,7 +30,16 @@ export interface AppConfig {
   /** Encrypts + stores a plaintext in the vault, returns the sec_* ref. */
   storeSecret?: (projectId: string, kind: string, plaintext: string) => Promise<string>;
   /** Recording bundle persistence (S3 put); absent in some tests. */
-  recordings?: Pick<RecordingDeps, "putObject">;
+  recordings?: Pick<RecordingDeps, "putObject"> & {
+    getObject?: (key: string) => Promise<Buffer>;
+  };
+  /** Compiler triggers (Phase 6); absent in some tests. */
+  compiler?: {
+    enqueueCompile: (recordingId: string) => Promise<void>;
+    enqueueValidate: (versionId: string) => Promise<void>;
+    /** Plain-language authoring (doc 03 B3): description → draft spec. */
+    draftFromDescription?: (projectId: string, name: string, description: string) => Promise<{ flowId: string; versionId: string }>;
+  };
 }
 
 export type ApiApp = ReturnType<typeof buildApp>;
@@ -174,6 +183,8 @@ export function buildApp(config: AppConfig) {
         { store: config.deps.store, putObject: config.recordings.putObject },
         { projectId: fields["projectId"], flowName: fields["flowName"] ?? null, bundle },
       );
+      // doc 03 A2: upload enqueues the compile job
+      await config.compiler?.enqueueCompile(result.recordingId);
       return reply.code(201).send(result);
     } catch (err) {
       if (isFlowGuardError(err) && err.code === "validation_failed") {
@@ -206,6 +217,133 @@ export function buildApp(config: AppConfig) {
       }
       throw err;
     }
+  });
+
+  // ── compiler & drafts (Phase 6) ───────────────────────────────────────────
+  app.post("/api/recordings/:id/compile", async (req, reply) => {
+    if (!config.compiler) return reply.code(500).send({ error: "compiler not configured" });
+    const { id } = req.params as { id: string };
+    const rec = await store().getRecording(id);
+    if (!rec) return reply.code(404).send({ error: "recording not found" });
+    await config.compiler.enqueueCompile(id);
+    return reply.code(202).send({ ok: true, recordingId: id });
+  });
+
+  app.get("/api/projects/:id/recordings", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listRecordings(id);
+  });
+
+  app.get("/api/projects/:id/drafts", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listDraftVersions(id);
+  });
+
+  app.get("/api/drafts/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const version = await store().getFlowVersion(id);
+    if (!version) return reply.code(404).send({ error: "draft not found" });
+    // join step ↔ after-screenshot via the recording trace, for the review screen
+    let stepScreenshots: Record<string, string> = {};
+    if (version.sourceRecordingId && config.recordings?.getObject) {
+      try {
+        const rec = await store().getRecording(version.sourceRecordingId);
+        if (rec) {
+          const { unzipSync, strFromU8 } = await import("fflate");
+          const files = unzipSync(await config.recordings.getObject(rec.traceKey));
+          const trace = JSON.parse(strFromU8(files["trace.json"]!)) as {
+            events: Array<{ id: string; screenshotAfter: string | null; screenshotBefore: string | null }>;
+          };
+          const report = version.compilationReport as { stepSourceEvents?: Record<string, string[]> } | null;
+          for (const [stepId, eventIds] of Object.entries(report?.stepSourceEvents ?? {})) {
+            for (const evId of eventIds) {
+              const ev = trace.events.find((e) => e.id === evId);
+              const shot = ev?.screenshotAfter ?? ev?.screenshotBefore;
+              if (shot) {
+                stepScreenshots[stepId] = `/api/recordings/${version.sourceRecordingId}/asset?path=${encodeURIComponent(shot)}`;
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+        stepScreenshots = {};
+      }
+    }
+    return { ...version, stepScreenshots };
+  });
+
+  app.get("/api/recordings/:id/asset", async (req, reply) => {
+    if (!config.recordings?.getObject) return reply.code(500).send({ error: "not configured" });
+    const { id } = req.params as { id: string };
+    const { path } = req.query as { path?: string };
+    if (!path || path.includes("..")) return reply.code(400).send({ error: "bad path" });
+    const rec = await store().getRecording(id);
+    if (!rec) return reply.code(404).send({ error: "recording not found" });
+    const { unzipSync } = await import("fflate");
+    const files = unzipSync(await config.recordings.getObject(rec.traceKey));
+    const file = files[path];
+    if (!file) return reply.code(404).send({ error: "no such asset" });
+    const type = path.endsWith(".jpg") ? "image/jpeg" : path.endsWith(".png") ? "image/png" : "application/json";
+    return reply.header("content-type", type).send(Buffer.from(file));
+  });
+
+  app.post("/api/drafts/:id/confirm", async (req, reply) => {
+    if (!config.compiler) return reply.code(500).send({ error: "compiler not configured" });
+    const { id } = req.params as { id: string };
+    const version = await store().getFlowVersion(id);
+    if (!version) return reply.code(404).send({ error: "draft not found" });
+    if (version.status !== "draft") return reply.code(409).send({ error: `version is ${version.status}, not draft` });
+    let body: { spec?: unknown };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    // human-confirmed spec (assertions are ALWAYS human-confirmed, doc 03 B7)
+    const { FlowSpecSchema } = await import("@flowguard/schemas");
+    const parsed = FlowSpecSchema.safeParse(body.spec ?? version.spec);
+    if (!parsed.success) {
+      return reply.code(422).send({
+        error: "edited spec failed validation",
+        issues: parsed.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`),
+      });
+    }
+    // spec rows are immutable: the confirmed edit becomes a new draft row
+    const confirmedId = await store().insertFlowVersion({
+      flowId: version.flowId,
+      spec: parsed.data,
+      status: "draft",
+      branch: version.branch,
+      source: "recording",
+      sourceRecordingId: version.sourceRecordingId,
+      supersedesVersionId: version.id,
+      compilationReport: { ...(version.compilationReport ?? {}), confirmedAt: new Date().toISOString() },
+    });
+    await store().setVersionStatus(version.id, "archived");
+    await config.compiler.enqueueValidate(confirmedId);
+    return reply.code(202).send({ versionId: confirmedId, validating: true });
+  });
+
+  app.post("/api/flows/plain-language", async (req, reply) => {
+    if (!config.compiler?.draftFromDescription) {
+      return reply.code(500).send({ error: "plain-language authoring not configured" });
+    }
+    let body: { projectId?: string; name?: string; description?: string };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (!body.projectId || !body.description) {
+      return reply.code(400).send({ error: "projectId and description are required" });
+    }
+    const result = await config.compiler.draftFromDescription(
+      body.projectId,
+      body.name ?? "Described flow",
+      body.description,
+    );
+    return reply.code(201).send(result);
   });
 
   app.get("/artifacts", async (req, reply) => {

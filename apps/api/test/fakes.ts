@@ -290,6 +290,116 @@ export class FakeStore implements Store {
     if (r) r.traceKey = traceKey;
   }
 
+  async getRecording(recordingId: string) {
+    const r = this.recordings.find((x) => x.id === recordingId);
+    return r ? { ...r, flowId: (r as { flowId?: string | null }).flowId ?? null, origin: r.origin ?? null } : null;
+  }
+
+  async updateRecording(recordingId: string, patch: { status?: string; flowId?: string | null }) {
+    const r = this.recordings.find((x) => x.id === recordingId) as
+      | (typeof this.recordings)[number] & { flowId?: string | null }
+      | undefined;
+    if (!r) return;
+    if (patch.status) r.status = patch.status;
+    if (patch.flowId !== undefined) r.flowId = patch.flowId;
+  }
+
+  async listRecordings(projectId: string) {
+    return this.recordings
+      .filter((r) => r.projectId === projectId)
+      .map((r) => ({
+        id: r.id,
+        flowId: (r as { flowId?: string | null }).flowId ?? null,
+        flowName: r.flowName,
+        status: r.status,
+        traceKey: r.traceKey,
+      }));
+  }
+
+  // ── flows & versions (Phase 6) ──────────────────────────────────────────
+  flowRows: Array<{ id: string; projectId: string; name: string; tier: string; persona: string | null; archived: boolean }> = [];
+  versionRows: Array<{
+    id: string;
+    flowId: string;
+    spec: FlowSpec;
+    status: string;
+    branch: string;
+    source: string;
+    sourceRecordingId: string | null;
+    compilationReport: Record<string, unknown> | null;
+  }> = [];
+
+  async createFlow(input: { id: string; projectId: string; name: string; tier: string; persona: string | null }) {
+    this.flowRows.push({ ...input, archived: false });
+  }
+
+  async archiveFlow(flowId: string) {
+    const f = this.flowRows.find((x) => x.id === flowId);
+    if (f) f.archived = true;
+  }
+
+  async insertFlowVersion(input: {
+    flowId: string;
+    spec: FlowSpec;
+    status: string;
+    branch: string;
+    source: string;
+    sourceRecordingId?: string | null;
+    supersedesVersionId?: string | null;
+    compilationReport?: Record<string, unknown> | null;
+  }): Promise<string> {
+    const id = this.id("fsv");
+    this.versionRows.push({
+      id,
+      flowId: input.flowId,
+      spec: input.spec,
+      status: input.status,
+      branch: input.branch,
+      source: input.source,
+      sourceRecordingId: input.sourceRecordingId ?? null,
+      compilationReport: input.compilationReport ?? null,
+    });
+    return id;
+  }
+
+  async getFlowVersion(versionId: string) {
+    const r = this.versionRows.find((v) => v.id === versionId);
+    return r ? { ...r } : null;
+  }
+
+  async listDraftVersions(projectId: string) {
+    return this.versionRows
+      .filter((v) => v.status === "draft" && this.flowRows.some((f) => f.id === v.flowId && f.projectId === projectId))
+      .map((v) => ({
+        id: v.id,
+        flowId: v.flowId,
+        flowName: this.flowRows.find((f) => f.id === v.flowId)?.name ?? "?",
+        branch: v.branch,
+        sourceRecordingId: v.sourceRecordingId,
+      }));
+  }
+
+  async setVersionStatus(versionId: string, status: string) {
+    const v = this.versionRows.find((x) => x.id === versionId);
+    if (v) v.status = status;
+  }
+
+  async promoteVersionToOfficial(versionId: string) {
+    const v = this.versionRows.find((x) => x.id === versionId);
+    if (!v) throw new Error("version not found");
+    for (const o of this.versionRows) {
+      if (o.flowId === v.flowId && o.branch === v.branch && ["official", "quarantined"].includes(o.status)) {
+        o.status = "archived";
+      }
+    }
+    v.status = "official";
+  }
+
+  async updateVersionReport(versionId: string, patch: Record<string, unknown>) {
+    const v = this.versionRows.find((x) => x.id === versionId);
+    if (v) v.compilationReport = { ...(v.compilationReport ?? {}), ...patch };
+  }
+
   async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {
     this.baseCache.set(`${specVersionId}:${baseSha}`, resultId);
   }

@@ -116,7 +116,9 @@ function makeHarness(opts: {
     }),
     enqueueFlowJob: async (_job, jobId) => void enqueued.push(jobId),
     awaitFlowResult: async (jobId) => {
-      const [, flowId, target] = jobId.split(":");
+      const parts = jobId.split("-");
+      const target = parts.at(-1);
+      const flowId = parts.slice(1, -1).join("-");
       const table = target === "head" ? opts.headResults : opts.baseResults;
       const r = table?.[flowId!];
       if (!r) throw new Error(`no scripted result for ${jobId}`);
@@ -172,7 +174,7 @@ describe("orchestrateRun", () => {
     });
     await orchestrateRun(h.deps, "run_1");
 
-    expect(h.enqueued).toEqual(["run_1:flw_rip:head", "run_1:flw_rip:base"]);
+    expect(h.enqueued).toEqual(["run_1-flw_rip-head", "run_1-flw_rip-base"]);
     expect(h.store.runs[0]!.state).toBe("done");
     expect(h.store.verdicts).toEqual([
       expect.objectContaining({ verdict: "passing", flowId: "flw_rip" }),
@@ -217,7 +219,7 @@ describe("orchestrateRun", () => {
       baseDeploymentAvailable: false,
     });
     await orchestrateRun(h.deps, "run_1");
-    expect(h.enqueued).toEqual(["run_1:flw_rip:head"]); // no base job
+    expect(h.enqueued).toEqual(["run_1-flw_rip-head"]); // no base job
     expect(h.octo.comments[0]!.body).toContain("Base comparison unavailable");
     expect(h.store.verdicts[0]!.verdict).toBe("env_issue");
   });
@@ -239,7 +241,7 @@ describe("orchestrateRun", () => {
 
     await orchestrateRun(h.deps, "run_1");
 
-    expect(h.enqueued).toEqual(["run_1:flw_rip:head"]);
+    expect(h.enqueued).toEqual(["run_1-flw_rip-head"]);
     const copied = h.store.runFlowResults.filter((r) => r.runId === "run_1" && r.target === "base");
     expect(copied).toHaveLength(1);
     expect(copied[0]!.fromCache).toBe(true);
@@ -368,7 +370,7 @@ describe("orchestrateRun — credentials & personas", () => {
     const h = personaHarness(true);
     await orchestrateRun(h.deps, "run_1");
     expect(h.jobs.length).toBeGreaterThan(0);
-    const headBundle = h.jobs.find((j) => j.jobId.endsWith(":head"))!.bundle as {
+    const headBundle = h.jobs.find((j) => j.jobId.endsWith("-head"))!.bundle as {
       persona: { name: string; usernameRef: string } | null;
       secretRefs: Record<string, string>;
     };

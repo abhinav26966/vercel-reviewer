@@ -175,7 +175,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           },
           f.spec,
         );
-        const jobId = `${runId}:${f.flowId}:${target}`;
+        const jobId = `${runId}-${f.flowId}-${target}`;
         await deps.enqueueFlowJob(
           buildJob(runId, f, target, deploymentUrl, sha, bypassSecret, deploymentId, configBundle),
           jobId,

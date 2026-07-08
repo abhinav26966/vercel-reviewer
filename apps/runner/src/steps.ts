@@ -103,6 +103,22 @@ async function act(ctx: StepContext, step: FlowStep): Promise<void> {
       }
       return;
     }
+    case "canvasClick": {
+      // deterministic half (doc 02 §3): normalized point → absolute coords at the
+      // spec viewport. Vision-grounding fallback lands in Phase 12.
+      const canvas = await resolveLocator(page, action.canvasLocator);
+      await canvas.waitFor({ state: "visible", timeout: 10000 });
+      // WebGL scenes need a beat to become raycast-ready under software rendering
+      // (Phase 2 lesson); replaced by a pre-click quiescence check in Phase 12
+      await page.waitForTimeout(1500);
+      const box = await canvas.boundingBox();
+      if (!box) throw new Error("canvas resolved but has no bounding box");
+      if (!action.point) {
+        throw new Error("canvasClick without a recorded point requires vision grounding (Phase 12)");
+      }
+      await page.mouse.click(box.x + box.width * action.point.nx, box.y + box.height * action.point.ny);
+      return;
+    }
     default:
       throw new Error(`action type "${action.type}" lands in a later phase`);
   }

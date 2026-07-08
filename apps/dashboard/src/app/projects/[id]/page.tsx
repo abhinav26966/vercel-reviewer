@@ -13,6 +13,18 @@ interface CredentialSet {
   dataBranchDiffers: boolean;
 }
 
+interface DraftRow {
+  id: string;
+  flowName: string;
+  branch: string;
+}
+
+interface RecordingRow {
+  id: string;
+  flowName: string | null;
+  status: string;
+}
+
 interface RunRow {
   id: string;
   kind: string;
@@ -26,6 +38,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const { id } = use(params);
   const [creds, setCreds] = useState<CredentialSet[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [recordings, setRecordings] = useState<RecordingRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({
     scope: "project",
@@ -38,6 +52,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const refresh = useCallback(() => {
     api<CredentialSet[]>(`/api/projects/${id}/credentials`).then(setCreds).catch((e) => setError(String(e)));
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
+    api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
+    api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
   }, [id]);
   useEffect(refresh, [refresh]);
 
@@ -145,6 +161,30 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           Save
         </button>
       </form>
+
+      <h2>Recordings & drafts</h2>
+      <table>
+        <tbody>
+          {recordings.map((r) => (
+            <tr key={r.id}>
+              <td>{r.flowName ?? r.id}</td>
+              <td><span className="pill">{r.status}</span></td>
+              <td className="muted">{r.id}</td>
+            </tr>
+          ))}
+          {drafts.map((d) => (
+            <tr key={d.id}>
+              <td>
+                <Link href={`/drafts/${d.id}`} data-testid={`draft-${d.id}`}>
+                  review draft: {d.flowName}
+                </Link>
+              </td>
+              <td><span className="pill">draft</span></td>
+              <td className="muted">{d.branch}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <h2>Runs</h2>
       <table>

@@ -6,13 +6,19 @@ import { RunFlowResultSchema, type ExecuteFlowJob, type RunFlowResult } from "@f
 export const RUNS_QUEUE = "runs";
 export const ORCHESTRATE_QUEUE = "orchestrate";
 
+export type ControlJob =
+  | { kind: "run"; runId: string }
+  | { kind: "compile"; recordingId: string }
+  | { kind: "validate"; versionId: string };
+
 export interface QueueBundle {
   enqueueFlowJob: (job: ExecuteFlowJob, jobId: string) => Promise<void>;
   awaitFlowResult: (jobId: string, timeoutMs: number) => Promise<RunFlowResult>;
   removeQueuedJob: (jobId: string) => Promise<void>;
   setAbortKey: (runId: string) => Promise<void>;
   enqueueOrchestration: (runId: string) => Promise<void>;
-  startOrchestrateWorker: (handler: (runId: string) => Promise<void>) => Worker;
+  enqueueControl: (job: ControlJob) => Promise<void>;
+  startOrchestrateWorker: (handler: (job: ControlJob) => Promise<void>) => Worker;
   close: () => Promise<void>;
 }
 
@@ -59,14 +65,25 @@ export function createQueues(redisUrl: string, logger: Logger): QueueBundle {
     async enqueueOrchestration(runId) {
       await orchestrateQueue.add(
         "orchestrate-run",
-        { runId },
-        { jobId: `orch:${runId}:${Date.now()}`, removeOnComplete: true, removeOnFail: { age: 3600 } },
+        { kind: "run", runId } satisfies ControlJob,
+        { jobId: `orch-${runId}-${Date.now()}`, removeOnComplete: true, removeOnFail: { age: 3600 } },
       );
+    },
+    async enqueueControl(job) {
+      await orchestrateQueue.add("control", job, {
+        removeOnComplete: true,
+        removeOnFail: { age: 3600 },
+      });
     },
     startOrchestrateWorker(handler) {
       const worker = new Worker(
         ORCHESTRATE_QUEUE,
-        async (job) => handler((job.data as { runId: string }).runId),
+        async (job) => {
+          const data = job.data as ControlJob | { runId: string };
+          // legacy shape from earlier phases
+          const control: ControlJob = "kind" in data ? data : { kind: "run", runId: data.runId };
+          await handler(control);
+        },
         { connection, concurrency: 2 },
       );
       worker.on("failed", (job, err) => logger.error({ jobId: job?.id, err }, "orchestration job failed"));
