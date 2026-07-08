@@ -1,13 +1,19 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
+  baseResultCache,
   deployments,
+  flowSpecVersions,
+  flows,
   githubInstallations,
   projects,
   pullRequests,
+  runFlowResults,
   runs,
+  verdicts,
   webhookDeliveries,
 } from "@flowguard/db";
+import type { FlowSpec, RunFlowResult, VerdictKind } from "@flowguard/schemas";
 import { newId } from "@flowguard/shared";
 
 /**
@@ -23,6 +29,7 @@ export interface ProjectRow {
   vercelProjectId: string | null;
   vercelTeamId: string | null;
   vercelTokenRef: string | null;
+  vercelBypassSecretRef: string | null;
   baseBranches: string[];
 }
 
@@ -111,6 +118,53 @@ export interface Store {
   }): Promise<RunRow | null>;
 
   cancelOpenRunsForPr(prId: string): Promise<number>;
+
+  // ── orchestration (Phase 3) ─────────────────────────────────────────────
+  getRunById(runId: string): Promise<RunRow | null>;
+  updateRun(
+    runId: string,
+    patch: Partial<Pick<RunRow, "state" | "headDeploymentId">> & {
+      mergeBaseSha?: string | null;
+      baseDeploymentId?: string | null;
+      plan?: Record<string, unknown>;
+      supersededBy?: string | null;
+      startedAt?: Date;
+      finishedAt?: Date;
+    },
+  ): Promise<void>;
+  getProjectById(projectId: string): Promise<ProjectRow | null>;
+  getPullRequestById(prId: string): Promise<(PullRequestRow & { title: string | null }) | null>;
+  getDeploymentById(deploymentId: string): Promise<DeploymentRow | null>;
+  getLatestDeploymentForSha(projectId: string, sha: string): Promise<DeploymentRow | null>;
+  /** Non-archived flows with their official spec version for a branch. */
+  listOfficialFlows(
+    projectId: string,
+    branch: string,
+  ): Promise<Array<{ flowId: string; flowName: string; tier: string; specVersionId: string; spec: FlowSpec }>>;
+  getCachedBaseResult(
+    specVersionId: string,
+    baseSha: string,
+  ): Promise<{ resultId: string; result: RunFlowResult; artifacts: Record<string, string | null> } | null>;
+  insertRunFlowResult(input: {
+    runId: string;
+    flowId: string;
+    specVersionId: string;
+    target: "head" | "base";
+    result: RunFlowResult;
+    fromCache: boolean;
+  }): Promise<string>;
+  upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void>;
+  insertVerdict(input: {
+    runId: string;
+    flowId: string;
+    verdict: VerdictKind;
+    humanCopy: string;
+    evidence: Record<string, unknown>;
+  }): Promise<void>;
+  /** Runs for the same PR still in flight (any non-terminal state), excluding one. */
+  listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]>;
+  markSuperseded(runId: string, byRunId: string): Promise<void>;
+  countRunsForPr(prId: string): Promise<number>;
 }
 
 const OPEN_RUN_STATES = [
@@ -160,6 +214,7 @@ export class DrizzleStore implements Store {
         vercelProjectId: projects.vercelProjectId,
         vercelTeamId: projects.vercelTeamId,
         vercelTokenRef: projects.vercelTokenRef,
+        vercelBypassSecretRef: projects.vercelBypassSecretRef,
         baseBranches: projects.baseBranches,
       })
       .from(projects)
@@ -344,5 +399,181 @@ export class DrizzleStore implements Store {
       .where(and(eq(runs.prId, prId), inArray(runs.state, OPEN_RUN_STATES)))
       .returning({ id: runs.id });
     return updated.length;
+  }
+
+  // ── orchestration (Phase 3) ─────────────────────────────────────────────
+
+  async getRunById(runId: string): Promise<RunRow | null> {
+    const rows = await this.db.select().from(runs).where(eq(runs.id, runId)).limit(1);
+    return (rows[0] as RunRow | undefined) ?? null;
+  }
+
+  async updateRun(
+    runId: string,
+    patch: Parameters<Store["updateRun"]>[1],
+  ): Promise<void> {
+    await this.db.update(runs).set(patch).where(eq(runs.id, runId));
+  }
+
+  async getProjectById(projectId: string): Promise<ProjectRow | null> {
+    const rows = await this.db
+      .select({
+        id: projects.id,
+        name: projects.name,
+        githubRepo: projects.githubRepo,
+        installationId: githubInstallations.installationId,
+        vercelProjectId: projects.vercelProjectId,
+        vercelTeamId: projects.vercelTeamId,
+        vercelTokenRef: projects.vercelTokenRef,
+        vercelBypassSecretRef: projects.vercelBypassSecretRef,
+        baseBranches: projects.baseBranches,
+      })
+      .from(projects)
+      .leftJoin(githubInstallations, eq(projects.githubInstallationId, githubInstallations.id))
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async getPullRequestById(prId: string) {
+    const rows = await this.db.select().from(pullRequests).where(eq(pullRequests.id, prId)).limit(1);
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: r.id,
+      projectId: r.projectId!,
+      number: r.number,
+      state: r.state,
+      baseBranch: r.baseBranch,
+      stickyCommentId: r.stickyCommentId,
+      title: r.title,
+    };
+  }
+
+  async getDeploymentById(deploymentId: string): Promise<DeploymentRow | null> {
+    const rows = await this.db.select().from(deployments).where(eq(deployments.id, deploymentId)).limit(1);
+    return (rows[0] as DeploymentRow | undefined) ?? null;
+  }
+
+  async getLatestDeploymentForSha(projectId: string, sha: string): Promise<DeploymentRow | null> {
+    const rows = await this.db
+      .select()
+      .from(deployments)
+      .where(and(eq(deployments.projectId, projectId), eq(deployments.sha, sha)))
+      .orderBy(desc(deployments.createdAt))
+      .limit(1);
+    return (rows[0] as DeploymentRow | undefined) ?? null;
+  }
+
+  async listOfficialFlows(projectId: string, branch: string) {
+    const rows = await this.db
+      .select({
+        flowId: flows.id,
+        flowName: flows.name,
+        tier: flows.tier,
+        specVersionId: flowSpecVersions.id,
+        spec: flowSpecVersions.spec,
+      })
+      .from(flows)
+      .innerJoin(flowSpecVersions, eq(flowSpecVersions.flowId, flows.id))
+      .where(
+        and(
+          eq(flows.projectId, projectId),
+          eq(flows.archived, false),
+          eq(flowSpecVersions.branch, branch),
+          eq(flowSpecVersions.status, "official"),
+        ),
+      );
+    return rows;
+  }
+
+  async getCachedBaseResult(specVersionId: string, baseSha: string) {
+    const rows = await this.db
+      .select({
+        resultId: baseResultCache.resultId,
+        result: runFlowResults.result,
+        artifacts: runFlowResults.artifacts,
+      })
+      .from(baseResultCache)
+      .innerJoin(runFlowResults, eq(baseResultCache.resultId, runFlowResults.id))
+      .where(and(eq(baseResultCache.specVersionId, specVersionId), eq(baseResultCache.baseSha, baseSha)))
+      .limit(1);
+    const r = rows[0];
+    return r ? { resultId: r.resultId!, result: r.result, artifacts: r.artifacts } : null;
+  }
+
+  async insertRunFlowResult(input: {
+    runId: string;
+    flowId: string;
+    specVersionId: string;
+    target: "head" | "base";
+    result: RunFlowResult;
+    fromCache: boolean;
+  }): Promise<string> {
+    const id = newId("runFlowResult");
+    await this.db.insert(runFlowResults).values({
+      id,
+      runId: input.runId,
+      flowId: input.flowId,
+      specVersionId: input.specVersionId,
+      target: input.target,
+      status: input.result.status,
+      failureClass: input.result.failureClass,
+      failedStepId: input.result.failedStepId,
+      result: input.result,
+      artifacts: input.result.artifacts,
+      fromCache: input.fromCache,
+    });
+    return id;
+  }
+
+  async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {
+    await this.db
+      .insert(baseResultCache)
+      .values({ specVersionId, baseSha, resultId })
+      .onConflictDoUpdate({
+        target: [baseResultCache.specVersionId, baseResultCache.baseSha],
+        set: { resultId },
+      });
+  }
+
+  async insertVerdict(input: {
+    runId: string;
+    flowId: string;
+    verdict: VerdictKind;
+    humanCopy: string;
+    evidence: Record<string, unknown>;
+  }): Promise<void> {
+    await this.db.insert(verdicts).values({
+      id: newId("verdict"),
+      runId: input.runId,
+      flowId: input.flowId,
+      verdict: input.verdict,
+      humanCopy: input.humanCopy,
+      evidence: input.evidence,
+    });
+  }
+
+  async listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]> {
+    const rows = await this.db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.prId, prId), inArray(runs.state, OPEN_RUN_STATES), ne(runs.id, excludeRunId)));
+    return rows as RunRow[];
+  }
+
+  async markSuperseded(runId: string, byRunId: string): Promise<void> {
+    await this.db
+      .update(runs)
+      .set({ state: "cancelled", supersededBy: byRunId })
+      .where(eq(runs.id, runId));
+  }
+
+  async countRunsForPr(prId: string): Promise<number> {
+    const rows = await this.db
+      .select({ n: count() })
+      .from(runs)
+      .where(and(eq(runs.prId, prId), eq(runs.kind, "pr")));
+    return rows[0]?.n ?? 0;
   }
 }

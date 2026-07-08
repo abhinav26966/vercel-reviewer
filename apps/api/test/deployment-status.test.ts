@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { STICKY_MARKER } from "@flowguard/github";
 import { handleDeploymentStatus } from "../src/handlers/deployment-status.js";
 import { handlePullRequest } from "../src/handlers/pull-request.js";
 import type { DeploymentStatusEvent, PullRequestEvent } from "../src/webhook-types.js";
@@ -20,35 +19,41 @@ function deploymentEvent(overrides: Partial<DeploymentStatusEvent["deployment"]>
 }
 
 describe("handleDeploymentStatus", () => {
-  it("creates a PR run, ONE sticky comment with the preview URL, and a commit status", async () => {
+  it("creates a planning run, sets a pending status, and enqueues orchestration", async () => {
     const store = new FakeStore();
     store.projects.push({ ...boundProject });
     const { octokit, comments, statuses } = fakeOctokit({ openPrs: [{ number: 7, state: "open" }] });
+    const orchestrated: string[] = [];
 
-    await handleDeploymentStatus(makeDeps(store, octokit), deploymentEvent());
+    await handleDeploymentStatus(
+      makeDeps(store, octokit, { enqueueOrchestration: async (id) => void orchestrated.push(id) }),
+      deploymentEvent(),
+    );
 
     expect(store.runs).toHaveLength(1);
     expect(store.runs[0]).toMatchObject({ kind: "pr", state: "planning", headSha: "headsha" });
-    expect(comments).toHaveLength(1);
-    expect(comments[0]!.body).toContain(STICKY_MARKER);
-    expect(comments[0]!.body).toContain("demo-git-feat-x.vercel.app");
+    expect(orchestrated).toEqual([store.runs[0]!.id]);
+    // the orchestrator owns the sticky comment now — handler posts none
+    expect(comments).toHaveLength(0);
     expect(statuses).toEqual([
-      { sha: "headsha", state: "success", description: "preview detected — no flows configured yet" },
+      { sha: "headsha", state: "pending", description: "preview detected — flows queued" },
     ]);
-    expect(store.pullRequests[0]!.stickyCommentId).toBe(comments[0]!.id);
   });
 
-  it("edits the SAME comment on a second deployment — never a second comment", async () => {
+  it("enqueues one orchestration per new deployment", async () => {
     const store = new FakeStore();
     store.projects.push({ ...boundProject });
-    const { octokit, comments } = fakeOctokit({ openPrs: [{ number: 7, state: "open" }] });
-    const deps = makeDeps(store, octokit);
+    const { octokit } = fakeOctokit({ openPrs: [{ number: 7, state: "open" }] });
+    const orchestrated: string[] = [];
+    const deps = makeDeps(store, octokit, {
+      enqueueOrchestration: async (id) => void orchestrated.push(id),
+    });
 
     await handleDeploymentStatus(deps, deploymentEvent());
     await handleDeploymentStatus(deps, deploymentEvent({ sha: "headsha2" }));
 
-    expect(comments).toHaveLength(1);
-    expect(store.runs).toHaveLength(2); // one run per sha, one comment total
+    expect(store.runs).toHaveLength(2);
+    expect(orchestrated).toHaveLength(2);
   });
 
   it("upgrades the awaiting_deployment run instead of creating a duplicate", async () => {
@@ -82,17 +87,20 @@ describe("handleDeploymentStatus", () => {
     expect(store.runs[0]!.headDeploymentId).not.toBeNull();
   });
 
-  it("is idempotent for a redelivered/duplicate deployment", async () => {
+  it("is idempotent for a redelivered/duplicate deployment — no second orchestration", async () => {
     const store = new FakeStore();
     store.projects.push({ ...boundProject });
-    const { octokit, comments } = fakeOctokit({ openPrs: [{ number: 7, state: "open" }] });
-    const deps = makeDeps(store, octokit);
+    const { octokit } = fakeOctokit({ openPrs: [{ number: 7, state: "open" }] });
+    const orchestrated: string[] = [];
+    const deps = makeDeps(store, octokit, {
+      enqueueOrchestration: async (id) => void orchestrated.push(id),
+    });
 
     await handleDeploymentStatus(deps, deploymentEvent());
     await handleDeploymentStatus(deps, deploymentEvent());
 
     expect(store.runs).toHaveLength(1);
-    expect(comments).toHaveLength(1);
+    expect(orchestrated).toHaveLength(1);
   });
 
   it("creates a base run when the SHA is on a base branch (Vercel sends ref=SHA)", async () => {

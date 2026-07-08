@@ -1,8 +1,4 @@
-import {
-  renderPreviewDetectedComment,
-  setCommitStatus,
-  upsertStickyComment,
-} from "@flowguard/github";
+import { setCommitStatus } from "@flowguard/github";
 import type { HandlerDeps } from "./deps.js";
 import { installationClient, splitRepo } from "./deps.js";
 import type { DeploymentStatusEvent } from "../webhook-types.js";
@@ -95,42 +91,35 @@ export async function handleDeploymentStatus(deps: HandlerDeps, payload: Deploym
         headSha: sha,
         headDeploymentId: deployment.id,
       });
-      const run =
-        upgraded ??
-        (
-          await store.createRun({
-            projectId: project.id,
-            kind: "pr",
-            state: "planning",
-            prId: prRow.id,
-            headSha: sha,
-            headDeploymentId: deployment.id,
-          })
-        ).run;
-
-      const body = renderPreviewDetectedComment({ previewUrl: url, sha });
-      const { commentId, created } = await upsertStickyComment(
-        octokit.rest.issues,
-        { owner, repo, prNumber: pr.number },
-        body,
-        prRow.stickyCommentId,
-      );
-      if (created || commentId !== prRow.stickyCommentId) {
-        await store.setStickyCommentId(prRow.id, commentId);
-      }
+      const { run, fresh } = upgraded
+        ? { run: upgraded, fresh: true }
+        : await store
+            .createRun({
+              projectId: project.id,
+              kind: "pr",
+              state: "planning",
+              prId: prRow.id,
+              headSha: sha,
+              headDeploymentId: deployment.id,
+            })
+            .then((r) => ({ run: r.run, fresh: r.created }));
 
       await setCommitStatus(octokit.rest.repos, {
         owner,
         repo,
         sha,
-        state: "success",
-        description: "preview detected — no flows configured yet",
+        state: "pending",
+        description: "preview detected — flows queued",
       });
 
-      logger.info(
-        { pr: pr.number, run: run.id, url, commentId },
-        "PR run created for preview deployment",
-      );
+      // the orchestrator owns the sticky comment from here (doc 06 §3)
+      if (fresh && deps.enqueueOrchestration) {
+        await deps.enqueueOrchestration(run.id);
+      } else if (!fresh) {
+        logger.info({ run: run.id }, "duplicate deployment event for an existing run — not re-orchestrating");
+      }
+
+      logger.info({ pr: pr.number, run: run.id, url }, "PR run queued for orchestration");
     }
     return;
   }

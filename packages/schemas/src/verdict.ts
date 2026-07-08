@@ -20,6 +20,32 @@ export type VerdictKind = z.infer<typeof VerdictKindSchema>;
 /** Blocking rule (doc 05 §1): any 🔴/🟠 → status-check failure. */
 export const BLOCKING_VERDICTS: readonly VerdictKind[] = ["broken", "hung", "dead"];
 
+/** Emoji rendering per doc 05 §1. */
+export const VERDICT_EMOJI: Record<VerdictKind, string> = {
+  passing: "✅",
+  broken: "🔴",
+  slower: "🟡",
+  hung: "🟠",
+  dead: "🟠",
+  changed_as_intended: "🔵",
+  skipped: "⚪",
+  already_broken_on_base: "⬜",
+  env_issue: "🟣",
+};
+
+/** Human labels for the comment table. */
+export const VERDICT_LABEL: Record<VerdictKind, string> = {
+  passing: "passing",
+  broken: "broken",
+  slower: "slower",
+  hung: "hung",
+  dead: "dead",
+  changed_as_intended: "changed as intended",
+  skipped: "skipped",
+  already_broken_on_base: "already broken on base",
+  env_issue: "env issue",
+};
+
 export const ApprovalStateSchema = z.enum(["awaiting", "approved", "rejected"]);
 
 export const VerdictSchema = z.object({

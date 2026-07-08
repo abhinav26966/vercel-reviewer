@@ -12,6 +12,8 @@ export interface VercelDeployment {
   state: string; // BUILDING | ERROR | INITIALIZING | QUEUED | READY | CANCELED
   target: string | null; // production | staging | null (preview)
   projectId: string;
+  /** git commit SHA (from meta.githubCommitSha); null for CLI deploys. */
+  sha: string | null;
   meta?: Record<string, string>;
   createdAt: number;
 }
@@ -80,6 +82,7 @@ export class VercelClient {
       state: d.readyState ?? d.state,
       target: d.target ?? null,
       projectId: d.projectId,
+      sha: d.meta?.["githubCommitSha"] ?? null,
       meta: d.meta,
       createdAt: d.createdAt,
     };
@@ -106,6 +109,7 @@ export class VercelClient {
       state: d.readyState ?? d.state ?? "UNKNOWN",
       target: d.target ?? null,
       projectId: d.projectId ?? opts.projectId,
+      sha: d.meta?.["githubCommitSha"] ?? null,
       meta: d.meta,
       createdAt: d.createdAt,
     }));

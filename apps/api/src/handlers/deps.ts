@@ -20,6 +20,8 @@ export interface HandlerDeps {
    * not cross-trigger). Absent (pre-seed) → repo match alone is accepted.
    */
   verifyDeploymentProject?: DeploymentProjectVerifier;
+  /** Hand a planning run to the orchestrator (Phase 3). Absent in Phase-1-style tests. */
+  enqueueOrchestration?: (runId: string) => Promise<void>;
 }
 
 export function splitRepo(fullName: string): { owner: string; repo: string } {

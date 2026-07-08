@@ -1,4 +1,5 @@
 import { pino } from "pino";
+import type { FlowSpec, RunFlowResult, VerdictKind } from "@flowguard/schemas";
 import type { Store, ProjectRow, DeploymentRow, PullRequestRow, RunRow } from "../src/store.js";
 import type { HandlerDeps } from "../src/handlers/deps.js";
 
@@ -154,6 +155,126 @@ export class FakeStore implements Store {
     }
     return n;
   }
+
+  // ── orchestration (Phase 3) ─────────────────────────────────────────────
+  officialFlows: Array<{
+    flowId: string;
+    flowName: string;
+    tier: string;
+    specVersionId: string;
+    spec: FlowSpec;
+    branch: string;
+    projectId: string;
+  }> = [];
+  runFlowResults: Array<{
+    id: string;
+    runId: string;
+    flowId: string;
+    specVersionId: string;
+    target: "head" | "base";
+    result: RunFlowResult;
+    fromCache: boolean;
+  }> = [];
+  baseCache = new Map<string, string>(); // `${specVersionId}:${sha}` → resultId
+  verdicts: Array<{ runId: string; flowId: string; verdict: VerdictKind; humanCopy: string }> = [];
+  runPatches: Array<{ runId: string; patch: Record<string, unknown> }> = [];
+  mergeBaseShas = new Map<string, string | null>(); // runId → mergeBaseSha
+
+  async getRunById(runId: string): Promise<RunRow | null> {
+    return this.runs.find((r) => r.id === runId) ?? null;
+  }
+
+  async updateRun(runId: string, patch: Parameters<Store["updateRun"]>[1]): Promise<void> {
+    this.runPatches.push({ runId, patch: patch as Record<string, unknown> });
+    const run = this.runs.find((r) => r.id === runId);
+    if (run) {
+      if (patch.state) run.state = patch.state;
+      if (patch.headDeploymentId !== undefined) run.headDeploymentId = patch.headDeploymentId;
+      if (patch.mergeBaseSha !== undefined) this.mergeBaseShas.set(runId, patch.mergeBaseSha);
+    }
+  }
+
+  async getProjectById(projectId: string): Promise<ProjectRow | null> {
+    return this.projects.find((p) => p.id === projectId) ?? null;
+  }
+
+  async getPullRequestById(prId: string) {
+    const pr = this.pullRequests.find((p) => p.id === prId);
+    return pr ? { ...pr, title: `PR ${pr.number}` } : null;
+  }
+
+  async getDeploymentById(deploymentId: string): Promise<DeploymentRow | null> {
+    return this.deployments.find((d) => d.id === deploymentId) ?? null;
+  }
+
+  async getLatestDeploymentForSha(projectId: string, sha: string): Promise<DeploymentRow | null> {
+    return (
+      [...this.deployments].reverse().find((d) => d.projectId === projectId && d.sha === sha) ?? null
+    );
+  }
+
+  async listOfficialFlows(projectId: string, branch: string) {
+    return this.officialFlows
+      .filter((f) => f.projectId === projectId && f.branch === branch)
+      .map(({ flowId, flowName, tier, specVersionId, spec }) => ({
+        flowId,
+        flowName,
+        tier,
+        specVersionId,
+        spec,
+      }));
+  }
+
+  async getCachedBaseResult(specVersionId: string, baseSha: string) {
+    const resultId = this.baseCache.get(`${specVersionId}:${baseSha}`);
+    if (!resultId) return null;
+    const row = this.runFlowResults.find((r) => r.id === resultId);
+    return row ? { resultId, result: row.result, artifacts: row.result.artifacts } : null;
+  }
+
+  async insertRunFlowResult(input: {
+    runId: string;
+    flowId: string;
+    specVersionId: string;
+    target: "head" | "base";
+    result: RunFlowResult;
+    fromCache: boolean;
+  }): Promise<string> {
+    const id = this.id("rfr");
+    this.runFlowResults.push({ id, ...input });
+    return id;
+  }
+
+  async upsertBaseCache(specVersionId: string, baseSha: string, resultId: string): Promise<void> {
+    this.baseCache.set(`${specVersionId}:${baseSha}`, resultId);
+  }
+
+  async insertVerdict(input: {
+    runId: string;
+    flowId: string;
+    verdict: VerdictKind;
+    humanCopy: string;
+    evidence: Record<string, unknown>;
+  }): Promise<void> {
+    this.verdicts.push(input);
+  }
+
+  async listActiveRunsForPr(prId: string, excludeRunId: string): Promise<RunRow[]> {
+    const open = ["awaiting_deployment", "planning", "resolving_base", "executing", "judging", "reporting"];
+    return this.runs.filter((r) => r.prId === prId && r.id !== excludeRunId && open.includes(r.state));
+  }
+
+  async markSuperseded(runId: string, byRunId: string): Promise<void> {
+    const run = this.runs.find((r) => r.id === runId);
+    if (run) {
+      run.state = "cancelled";
+      (run as RunRow & { supersededBy?: string }).supersededBy = byRunId;
+    }
+  }
+
+  async countRunsForPr(prId: string): Promise<number> {
+    return this.runs.filter((r) => r.prId === prId && r.kind === "pr").length;
+  }
 }
 
 /** Fake installation octokit capturing GitHub-side effects. */
@@ -240,5 +361,6 @@ export const boundProject: ProjectRow = {
   vercelProjectId: "prj_vercel_1",
   vercelTeamId: null,
   vercelTokenRef: null,
+  vercelBypassSecretRef: null,
   baseBranches: ["main"],
 };

@@ -1,0 +1,307 @@
+import { describe, expect, it } from "vitest";
+import { pino } from "pino";
+import { FlowSpecSchema, RunFlowResultSchema, type FlowSpec, type RunFlowResult } from "@flowguard/schemas";
+import { STICKY_MARKER } from "@flowguard/github";
+import { orchestrateRun, type OrchestratorDeps } from "../src/orchestrator/orchestrate.js";
+import { compareFlow } from "../src/orchestrator/comparator.js";
+import { FakeStore, boundProject, fakeOctokit } from "./fakes.js";
+
+// ── builders ──────────────────────────────────────────────────────────────
+const spec: FlowSpec = FlowSpecSchema.parse({
+  specVersion: 3,
+  flowId: "flw_rip",
+  projectId: "prj_1",
+  name: "Rip",
+  startPath: "/open",
+  steps: [
+    {
+      id: "s6",
+      title: "Rip open the pack",
+      action: {
+        type: "click",
+        locators: [
+          { kind: "testid", value: "pack-canvas" },
+          { kind: "css", value: "canvas" },
+        ],
+      },
+      settle: { strategy: "networkidle", timeoutMs: 5000 },
+      postConditions: [
+        { kind: "dom", assert: "hidden", locators: [{ kind: "testid", value: "open-error" }] },
+      ],
+    },
+  ],
+});
+
+function result(target: "head" | "base", status: "passed" | "failed" | "error", extras: Partial<RunFlowResult> = {}): RunFlowResult {
+  return RunFlowResultSchema.parse({
+    runId: "run_x",
+    flowId: "flw_rip",
+    specVersionId: "fsv_1",
+    target,
+    status,
+    failedStepId: status === "failed" ? "s6" : null,
+    failureClass: status === "failed" ? "assertion" : status === "error" ? "env" : null,
+    steps:
+      status === "failed"
+        ? [
+            {
+              id: "s6",
+              durationMs: 5000,
+              settleMs: 0,
+              network: [
+                { method: "POST", url: "https://x/api/packs/open", status: 500, ttfbMs: 80, totalMs: 120, resourceType: "fetch" },
+              ],
+              screenshot: "runs/run_x/flw_rip/head/steps/s6/failure.png",
+              assertions: [{ kind: "dom", pass: false, message: 'text "1" !~ /^0$/' }],
+            },
+          ]
+        : [],
+    perf: { flowTotalMs: 6100, regressions: [] },
+    artifacts: {
+      video: `runs/run_x/flw_rip/${target}/video.webm`,
+      trace: `runs/run_x/flw_rip/${target}/trace.zip`,
+      har: null,
+      console: null,
+      coverage: null,
+    },
+    ...extras,
+  });
+}
+
+const link = (key: string, label: string) => `[${label}](https://api.local/artifacts?key=${key})`;
+
+interface Harness {
+  deps: OrchestratorDeps;
+  store: FakeStore;
+  octo: ReturnType<typeof fakeOctokit>;
+  enqueued: string[];
+  aborted: string[];
+}
+
+function makeHarness(opts: {
+  headResults?: Record<string, RunFlowResult>;
+  baseResults?: Record<string, RunFlowResult>;
+  baseDeploymentAvailable?: boolean;
+  flows?: Array<{ flowId: string; flowName: string; specVersionId: string }>;
+}): Harness {
+  const store = new FakeStore();
+  store.projects.push({ ...boundProject, id: "prj_1", vercelProjectId: "prj_v", vercelTokenRef: "sec_tok", vercelBypassSecretRef: "sec_byp" });
+  store.pullRequests.push({ id: "pull_1", projectId: "prj_1", number: 7, state: "open", baseBranch: "main", stickyCommentId: null });
+  store.deployments.push({ id: "dep_head", projectId: "prj_1", sha: "headsha", url: "https://head.vercel.app", environment: "preview", state: "ready", branch: "feat" });
+  store.runs.push({ id: "run_1", projectId: "prj_1", kind: "pr", state: "planning", prId: "pull_1", headSha: "headsha", headDeploymentId: "dep_head", branch: null });
+  for (const f of opts.flows ?? [{ flowId: "flw_rip", flowName: "Rip", specVersionId: "fsv_1" }]) {
+    store.officialFlows.push({ ...f, tier: "standard", spec: { ...spec, flowId: f.flowId }, branch: "main", projectId: "prj_1" });
+  }
+
+  const octo = fakeOctokit({ openPrs: [], branchContains: { main: ["mergebase"] } });
+  // compare API for merge base
+  (octo.octokit.rest.repos as unknown as Record<string, unknown>)["compareCommitsWithBasehead"] = async () => ({
+    data: { status: "diverged", merge_base_commit: { sha: "mergebase" } },
+  });
+
+  const enqueued: string[] = [];
+  const aborted: string[] = [];
+  const deps: OrchestratorDeps = {
+    store,
+    logger: pino({ level: "silent" }),
+    githubApp: { getInstallationOctokit: async () => octo.octokit as never },
+    resolveSecret: async (ref) => `plain:${ref}`,
+    makeVercelClient: () => ({
+      listDeployments: async ({ sha }) =>
+        opts.baseDeploymentAvailable === false
+          ? []
+          : sha === "mergebase"
+            ? [{ uid: "dpl_base", url: "base.vercel.app", state: "READY", sha: "mergebase" }]
+            : [],
+    }),
+    enqueueFlowJob: async (_job, jobId) => void enqueued.push(jobId),
+    awaitFlowResult: async (jobId) => {
+      const [, flowId, target] = jobId.split(":");
+      const table = target === "head" ? opts.headResults : opts.baseResults;
+      const r = table?.[flowId!];
+      if (!r) throw new Error(`no scripted result for ${jobId}`);
+      return r;
+    },
+    removeQueuedJob: async () => {},
+    setAbortKey: async (runId) => void aborted.push(runId),
+    artifactLink: link,
+    flowJobTimeoutMs: 1000,
+  };
+  return { deps, store, octo, enqueued, aborted };
+}
+
+// ── comparator (pure) ─────────────────────────────────────────────────────
+describe("compareFlow", () => {
+  it("head pass → passing", () => {
+    const c = compareFlow({ spec, head: result("head", "passed"), base: result("base", "passed"), baseAvailable: true, link });
+    expect(c.verdict).toBe("passing");
+  });
+
+  it("head fail + base pass → broken, naming step, cause, 5xx, and links", () => {
+    const c = compareFlow({ spec, head: result("head", "failed"), base: result("base", "passed"), baseAvailable: true, link });
+    expect(c.verdict).toBe("broken");
+    expect(c.detail).toContain('step s6 "Rip open the pack"');
+    expect(c.detail).toContain('text "1" !~ /^0$/');
+    expect(c.detail).toContain("POST /api/packs/open` → 500");
+    expect(c.detail).toContain("[video]");
+    expect(c.detail).toContain("[screenshot]");
+  });
+
+  it("both fail → already_broken_on_base (never blame the PR)", () => {
+    const c = compareFlow({ spec, head: result("head", "failed"), base: result("base", "failed"), baseAvailable: true, link });
+    expect(c.verdict).toBe("already_broken_on_base");
+  });
+
+  it("head fail + no base comparison → env_issue, not broken", () => {
+    const c = compareFlow({ spec, head: result("head", "failed"), base: null, baseAvailable: false, link });
+    expect(c.verdict).toBe("env_issue");
+  });
+
+  it("head env error → env_issue regardless of base", () => {
+    const c = compareFlow({ spec, head: result("head", "error"), base: result("base", "passed"), baseAvailable: true, link });
+    expect(c.verdict).toBe("env_issue");
+  });
+});
+
+// ── orchestration ─────────────────────────────────────────────────────────
+describe("orchestrateRun", () => {
+  it("happy path: head+base jobs, ✅ verdict, table comment, success status, cache write, done", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued).toEqual(["run_1:flw_rip:head", "run_1:flw_rip:base"]);
+    expect(h.store.runs[0]!.state).toBe("done");
+    expect(h.store.verdicts).toEqual([
+      expect.objectContaining({ verdict: "passing", flowId: "flw_rip" }),
+    ]);
+    expect(h.store.baseCache.size).toBe(1);
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain(STICKY_MARKER);
+    expect(comment).toContain("| Rip | ✅ passing |");
+    expect(comment).toContain("`main` @ `mergeba` (merge base)");
+    const finalStatus = h.octo.statuses.at(-1)!;
+    expect(finalStatus).toMatchObject({ state: "success" });
+  });
+
+  it("head fail + base pass → 🔴 row with step+video and a failing status check", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "failed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    await orchestrateRun(h.deps, "run_1");
+
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain("🔴 broken");
+    expect(comment).toContain('step s6 "Rip open the pack"');
+    expect(comment).toContain("[video]");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "failure" });
+    expect(h.store.verdicts[0]!.verdict).toBe("broken");
+  });
+
+  it("both fail → ⬜ and a green status check", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "failed") },
+      baseResults: { flw_rip: result("base", "failed") },
+    });
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.octo.comments[0]!.body).toContain("⬜ already broken on base");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "success" });
+  });
+
+  it("base unresolvable → head-only run, env_issue on failures", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "failed") },
+      baseDeploymentAvailable: false,
+    });
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.enqueued).toEqual(["run_1:flw_rip:head"]); // no base job
+    expect(h.octo.comments[0]!.body).toContain("Base comparison unavailable");
+    expect(h.store.verdicts[0]!.verdict).toBe("env_issue");
+  });
+
+  it("base cache hit → base job NOT enqueued, result copied with from_cache", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+    });
+    // pre-warm the cache
+    const cachedId = await h.store.insertRunFlowResult({
+      runId: "run_0",
+      flowId: "flw_rip",
+      specVersionId: "fsv_1",
+      target: "base",
+      result: result("base", "passed"),
+      fromCache: false,
+    });
+    await h.store.upsertBaseCache("fsv_1", "mergebase", cachedId);
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued).toEqual(["run_1:flw_rip:head"]);
+    const copied = h.store.runFlowResults.filter((r) => r.runId === "run_1" && r.target === "base");
+    expect(copied).toHaveLength(1);
+    expect(copied[0]!.fromCache).toBe(true);
+    expect(h.octo.comments[0]!.body).toContain("base cache hit 1/1");
+  });
+
+  it("supersedes older in-flight runs: cancelled, abort key set, superseded_by recorded", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    h.store.runs.push({
+      id: "run_0",
+      projectId: "prj_1",
+      kind: "pr",
+      state: "executing",
+      prId: "pull_1",
+      headSha: "oldsha",
+      headDeploymentId: "dep_old",
+      branch: null,
+    });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    const old = h.store.runs.find((r) => r.id === "run_0")!;
+    expect(old.state).toBe("cancelled");
+    expect((old as { supersededBy?: string }).supersededBy).toBe("run_1");
+    expect(h.aborted).toEqual(["run_0"]);
+  });
+
+  it("a run superseded mid-flight does not report", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    // simulate a newer run cancelling us while jobs execute
+    const origAwait = h.deps.awaitFlowResult;
+    h.deps.awaitFlowResult = async (jobId, t) => {
+      await h.store.markSuperseded("run_1", "run_2");
+      return origAwait(jobId, t);
+    };
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.octo.comments).toHaveLength(0);
+    expect(h.store.runs.find((r) => r.id === "run_1")!.state).toBe("cancelled");
+  });
+
+  it("no flows configured → hello comment + success status, run done", async () => {
+    const h = makeHarness({ flows: [] });
+    h.store.officialFlows = [];
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.octo.comments[0]!.body).toContain("No flows configured yet");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "success" });
+    expect(h.store.runs[0]!.state).toBe("done");
+  });
+
+  it("skips runs that are not in planning (idempotent re-delivery)", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    h.store.runs[0]!.state = "done";
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.enqueued).toHaveLength(0);
+  });
+});

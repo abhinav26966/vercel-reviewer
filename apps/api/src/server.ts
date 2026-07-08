@@ -1,3 +1,5 @@
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createDb, secrets } from "@flowguard/db";
 import { eq } from "drizzle-orm";
 import { createGithubApp, decodePrivateKey } from "@flowguard/github";
@@ -5,6 +7,9 @@ import { createLogger, decryptSecret, parseMasterKey } from "@flowguard/shared";
 import { VercelClient } from "@flowguard/vercel";
 import { buildApp } from "./app.js";
 import { loadEnv } from "./env.js";
+import { artifactLinkBuilder, verifyArtifactSig } from "./orchestrator/artifact-links.js";
+import { orchestrateRun, type OrchestratorDeps } from "./orchestrator/orchestrate.js";
+import { createQueues } from "./orchestrator/queue.js";
 import { DrizzleStore } from "./store.js";
 
 const env = loadEnv();
@@ -25,13 +30,43 @@ async function resolveSecret(ref: string): Promise<string> {
   return decryptSecret({ ciphertext: row.ciphertext, dekWrapped: row.dekWrapped }, masterKey);
 }
 
+const queues = createQueues(env.REDIS_URL, logger);
+
+const s3 = new S3Client({
+  endpoint: env.S3_ENDPOINT,
+  region: env.S3_REGION,
+  forcePathStyle: true,
+  credentials: { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY },
+});
+
+const orchestratorDeps: OrchestratorDeps = {
+  store,
+  githubApp,
+  logger: createLogger({ name: "orchestrator", level: env.LOG_LEVEL }),
+  resolveSecret,
+  makeVercelClient: (token, teamId) => new VercelClient({ token, teamId }),
+  enqueueFlowJob: queues.enqueueFlowJob,
+  awaitFlowResult: queues.awaitFlowResult,
+  removeQueuedJob: queues.removeQueuedJob,
+  setAbortKey: queues.setAbortKey,
+  artifactLink: artifactLinkBuilder(env.PUBLIC_API_URL, masterKey),
+};
+
+queues.startOrchestrateWorker((runId) => orchestrateRun(orchestratorDeps, runId));
+
 const app = buildApp({
   webhookSecret: env.GITHUB_WEBHOOK_SECRET,
   logger,
+  artifacts: {
+    verifySig: (key, sig) => verifyArtifactSig(key, sig, masterKey),
+    presign: (key) =>
+      getSignedUrl(s3, new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }), { expiresIn: 300 }),
+  },
   deps: {
     store,
     githubApp,
     logger,
+    enqueueOrchestration: queues.enqueueOrchestration,
     verifyDeploymentProject: async ({ deploymentUrl, vercelProjectId, vercelTeamId, vercelTokenRef }) => {
       try {
         const token = await resolveSecret(vercelTokenRef);

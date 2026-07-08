@@ -17,6 +17,11 @@ export interface AppConfig {
   webhookSecret: string;
   deps: HandlerDeps;
   logger: Logger;
+  /** Artifact redirect endpoint (doc 05 §6 presigned links); absent in some tests. */
+  artifacts?: {
+    verifySig: (s3Key: string, sig: string) => boolean;
+    presign: (s3Key: string) => Promise<string>;
+  };
 }
 
 export type ApiApp = ReturnType<typeof buildApp>;
@@ -30,6 +35,16 @@ export function buildApp(config: AppConfig) {
   });
 
   app.get("/healthz", async () => ({ ok: true }));
+
+  app.get("/artifacts", async (req, reply) => {
+    if (!config.artifacts) return reply.code(404).send({ error: "artifacts not configured" });
+    const { key, sig } = req.query as { key?: string; sig?: string };
+    if (!key || !sig || !config.artifacts.verifySig(key, sig)) {
+      return reply.code(403).send({ error: "invalid artifact signature" });
+    }
+    const url = await config.artifacts.presign(key);
+    return reply.redirect(url, 302);
+  });
 
   app.post("/webhooks/github", async (req, reply) => {
     const rawBody = req.body as string;
