@@ -5,7 +5,7 @@ export default function HomePage() {
     <main>
       <h1>PackDemo</h1>
       <p className="muted">
-        The permanent FlowGuard test target (phase-1 webhook test, push 2): email/password login, a shop with Stripe test-mode
+        The permanent FlowGuard test target — email/password login, a shop with Stripe test-mode
         checkout, an inventory, and a WebGL pack-opening scene.
       </p>
       <p>
