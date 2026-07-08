@@ -15,7 +15,7 @@ export default function HomePage() {
       </p>
       <div className="grid">
         <div className="card">
-          <h3>Chaos flags</h3>
+          <h3>Chaos flags (for FlowGuard testing)</h3>
           <p className="muted">
             <code>/shop?slow=1</code> — 1.8s latency on buy
             <br />
