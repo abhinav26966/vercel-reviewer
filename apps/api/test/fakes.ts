@@ -157,7 +157,13 @@ export class FakeStore implements Store {
 }
 
 /** Fake installation octokit capturing GitHub-side effects. */
-export function fakeOctokit(opts: { openPrs?: Array<{ number: number; state: string }> } = {}) {
+export function fakeOctokit(
+  opts: {
+    openPrs?: Array<{ number: number; state: string }>;
+    /** SHAs that the compare API reports as contained in each branch. */
+    branchContains?: Record<string, string[]>;
+  } = {},
+) {
   const comments: Array<{ id: number; body: string }> = [];
   const statuses: Array<{ sha: string; state: string; description?: string }> = [];
   let nextCommentId = 100;
@@ -196,6 +202,12 @@ export function fakeOctokit(opts: { openPrs?: Array<{ number: number; state: str
         async createCommitStatus(params: { sha: string; state: string; description?: string }) {
           statuses.push({ sha: params.sha, state: params.state, description: params.description });
           return {};
+        },
+        async compareCommitsWithBasehead({ basehead }: { basehead: string }) {
+          const [branch, sha] = basehead.split("...");
+          const contained = opts.branchContains?.[branch!] ?? [];
+          if (!contained.length) throw new Error("404 unknown branch/sha");
+          return { data: { status: contained.includes(sha!) ? "identical" : "diverged" } };
         },
       },
     },

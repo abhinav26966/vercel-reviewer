@@ -95,14 +95,18 @@ describe("handleDeploymentStatus", () => {
     expect(comments).toHaveLength(1);
   });
 
-  it("creates a base run for a base-branch deployment with no open PR", async () => {
+  it("creates a base run when the SHA is on a base branch (Vercel sends ref=SHA)", async () => {
     const store = new FakeStore();
     store.projects.push({ ...boundProject });
-    const { octokit, comments } = fakeOctokit({ openPrs: [] });
+    // Vercel reality: deployment.ref is the commit SHA, not a branch name
+    const { octokit, comments } = fakeOctokit({
+      openPrs: [],
+      branchContains: { main: ["mergesha"] },
+    });
 
     await handleDeploymentStatus(
       makeDeps(store, octokit),
-      deploymentEvent({ ref: "main", sha: "mergesha" }),
+      deploymentEvent({ ref: "mergesha", sha: "mergesha", environment: "Production" }),
     );
 
     expect(store.runs).toHaveLength(1);
@@ -110,10 +114,22 @@ describe("handleDeploymentStatus", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it("ignores non-success states, unbound repos, and non-base branches without PRs", async () => {
+  it("still accepts providers that DO send a branch name as ref", async () => {
     const store = new FakeStore();
     store.projects.push({ ...boundProject });
     const { octokit } = fakeOctokit({ openPrs: [] });
+
+    await handleDeploymentStatus(
+      makeDeps(store, octokit),
+      deploymentEvent({ ref: "main", sha: "mergesha" }),
+    );
+    expect(store.runs[0]).toMatchObject({ kind: "base", branch: "main" });
+  });
+
+  it("ignores non-success states, unbound repos, and SHAs on no base branch", async () => {
+    const store = new FakeStore();
+    store.projects.push({ ...boundProject });
+    const { octokit } = fakeOctokit({ openPrs: [], branchContains: { main: ["othersha"] } });
     const deps = makeDeps(store, octokit);
 
     await handleDeploymentStatus(deps, deploymentEvent({}, "pending"));
@@ -121,7 +137,7 @@ describe("handleDeploymentStatus", () => {
       ...deploymentEvent(),
       repository: { full_name: "other/repo" },
     });
-    await handleDeploymentStatus(deps, deploymentEvent({ ref: "random-branch" }));
+    await handleDeploymentStatus(deps, deploymentEvent({ ref: "featsha", sha: "featsha" }));
 
     expect(store.runs).toHaveLength(0);
   });

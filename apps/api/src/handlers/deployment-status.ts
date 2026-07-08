@@ -135,19 +135,55 @@ export async function handleDeploymentStatus(deps: HandlerDeps, payload: Deploym
     return;
   }
 
-  // No open PR → base-branch pipeline when the ref is a configured base branch
-  if (branch && project.baseBranches.includes(branch)) {
+  // No open PR → base-branch pipeline when the SHA is on a configured base branch.
+  // NOTE: Vercel sets deployment.ref to the COMMIT SHA, not the branch name, so we
+  // resolve the branch via the GitHub compare API (doc 06 §2).
+  const baseBranch = await resolveBaseBranch(octokit, owner, repo, project.baseBranches, sha, branch);
+  if (baseBranch) {
     const { run, created } = await store.createRun({
       projectId: project.id,
       kind: "base",
       state: "planning",
       headSha: sha,
       headDeploymentId: deployment.id,
-      branch,
+      branch: baseBranch,
     });
-    logger.info({ run: run.id, branch, sha, created }, "base run created (no-op body in Phase 1)");
+    logger.info(
+      { run: run.id, branch: baseBranch, sha, created },
+      "base run created (no-op body in Phase 1)",
+    );
     return;
   }
 
-  logger.debug({ sha, branch, environment }, "deployment matches no open PR or base branch — ignored");
+  logger.info({ sha, ref: branch, environment }, "deployment matches no open PR or base branch — ignored");
+}
+
+/**
+ * Is this SHA on one of the configured base branches? `ref` short-circuits when a
+ * provider does send a branch name; otherwise compare per branch: status
+ * identical/behind ⇒ the commit is contained in the branch.
+ */
+async function resolveBaseBranch(
+  octokit: { rest: { repos: { compareCommitsWithBasehead(params: { owner: string; repo: string; basehead: string }): Promise<{ data: { status: string } }> } } },
+  owner: string,
+  repo: string,
+  baseBranches: string[],
+  sha: string,
+  ref: string | null,
+): Promise<string | null> {
+  if (ref && baseBranches.includes(ref)) return ref;
+  for (const branch of baseBranches) {
+    try {
+      const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${branch}...${sha}`,
+      });
+      // identical: sha IS the branch head; behind: sha is an ancestor of the head
+      if (data.status === "identical" || data.status === "behind") return branch;
+    } catch {
+      // unknown sha/branch — keep checking the rest
+    }
+  }
+  return null;
 }

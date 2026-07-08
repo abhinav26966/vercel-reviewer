@@ -10,7 +10,7 @@
 
 ## 2. Trigger model
 
-**Primary trigger: `deployment_status` with `state=success`** — never raw `push`. We want the *built preview*, not the commit; this also automatically covers Vercel rebuilds/redeploys of the same SHA. From the event: `environment` (preview vs production), `deployment.sha`, `target_url` (preview URL), repo. Filter: preview deployments belonging to the bound Vercel project (match URL/project id — multi-project repos must not cross-trigger). Map SHA → open PR(s) via the GitHub API (`listPullRequestsAssociatedWithCommit`). SHA on a configured base branch instead → base-run pipeline (doc 05 §5).
+**Primary trigger: `deployment_status` with `state=success`** — never raw `push`. We want the *built preview*, not the commit; this also automatically covers Vercel rebuilds/redeploys of the same SHA. From the event: `environment` (preview vs production), `deployment.sha`, `target_url` (preview URL), repo. Filter: preview deployments belonging to the bound Vercel project (match URL/project id — multi-project repos must not cross-trigger). Map SHA → open PR(s) via the GitHub API (`listPullRequestsAssociatedWithCommit`). SHA on a configured base branch instead → base-run pipeline (doc 05 §5). **Implementation note (verified live):** Vercel sets `deployment.ref` to the commit SHA, not the branch name — base-branch membership must be resolved via the compare API (`{branch}...{sha}` → `identical`/`behind` ⇒ on the branch), not by reading `ref`.
 
 Fallback for repos where GitHub deployment events are unreliable: poll the Vercel deployments API for the head SHA with 15s interval / 10min cap after a `pull_request.synchronize` event. Build both; prefer events.
 
