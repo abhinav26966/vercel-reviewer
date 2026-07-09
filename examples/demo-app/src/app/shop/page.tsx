@@ -22,18 +22,18 @@ export default async function ShopPage({
           Payment was not completed.
         </p>
       ) : null}
-      <div className="grid" id="shop-grid">
+      <section className="grid" id="shop-list">
         <div className="pack-tile">
           <h3>Starter Pack</h3>
           <p className="muted">5 random cards</p>
           <p>$1.99</p>
           <form action={buyAction} method="POST">
-            <button type="submit" data-testid="buy-pack-btn">
-              Buy Pack
+            <button type="submit" data-testid="get-pack-btn">
+              Get Pack
             </button>
           </form>
         </div>
-      </div>
+      </section>
     </main>
   );
 }
