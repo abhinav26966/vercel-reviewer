@@ -237,6 +237,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           tracker.window(0, Date.now()),
           job.target.deploymentUrl,
           logger,
+          job.target.bypassSecret,
         ).catch(() => null);
       }
       await context.close();

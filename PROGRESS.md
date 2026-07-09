@@ -2,59 +2,68 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 8 — Diff-aware selection + coverage maps — code complete, live AC ~half done (2026-07-09); BLOCKED on founder merging PR #6**
+## Current phase: **Phase 8 — Diff-aware selection + coverage maps — ✅ AC PASSED (2026-07-09)**; next up: Phase 9 — Judge, intent, heal, 🔵 loop
 
-### Phase 8 state
+### Phase 8 AC evidence (live, PR #7 `test/phase8-selection`, sequential pushes; PR #6 = platform merge)
 
-Implementation complete + all gates green (build, 111 api/runner tests of ~200
-total, lint, typecheck). Committed locally on main (`92c9955`, `2a6d2f9`).
+- (a) **README-only push → smoke tier only** (`786a4a5`): plan selected only
+  Login ("smoke tier — always runs"); Buy & Rip ⚪ skipped with "no overlap
+  with the diff" as a table row.
+- (b) **PackScene.tsx comment tweak → rip flow selected via coverage**
+  (`952aa4b`): reason "touches examples/demo-app/src/components/PackScene.tsx".
+  Coverage for the rip flow is exactly its 3 client components (OpenClient,
+  PackScene, flow-state), rootDir-prefixed.
+- (c) **Manifest change → fan-out** (`3a74aac`): "fan-out: shared config
+  changed: examples/demo-app/package.json", both flows ran. (Root
+  pnpm-lock.yaml can't be live-tested — changes outside examples/demo-app
+  don't trigger a Vercel build — covered by unit test instead.) Also fired
+  live on PR #6 itself via apps/runner/package.json.
+- (d) **Selection reasons visible in the comment details block** on every
+  push: "flows selected N/M (diff-aware) — fan-out: … · base cache hit …"
+  plus a per-flow reason list.
+- Coverage seeding proven: cold-start run re-executed base despite a warm
+  cache, wrote coverage_maps (files + apiRoutes `/api/login`,
+  `/api/packs/buy`, `/api/packs/open`), and the NEXT push's selection used it.
 
 Built: runner coverage collection (Playwright JS coverage → executed
-first-party chunks → source-map fetch via page.request (carries bypass
-cookie) → chunk-level source attribution; network-derived `/api/*` URL paths;
-rides on `RunFlowResult.coverage`), `select.ts` (fan-out globs incl. >40%
+first-party chunks → source-map fetch with explicit bypass header →
+chunk-level source attribution; network-derived `/api/*` URL paths; rides on
+`RunFlowResult.coverage`), `select.ts` (fan-out globs incl. >40%
 covered-files rule + truncated-diff rule → smoke tier → cold start →
 intersection: coverage files / changed `app/api/**/route.*` mapped to URL
-paths / route-directory heuristic from spec startPath+navigates), orchestrator
-wiring (selection per push from compare diff; ⚪ skipped rows with reasons in
-the comment + selection list in details; plan records reasons; coverage_maps
-written from fresh passing base m1 results with rootDir-prefixed repo paths;
-base cache bypassed once per flow until a coverage row exists — "seeding"),
-flows list + smoke toggle in dashboard (GET /projects/:id/flows,
-PATCH /flows/:id/tier), `productionBrowserSourceMaps` in demo-app,
-`rootDir` project setting (set to `examples/demo-app` in local DB).
-Docs 02/04/06/08 updated same commit.
-
-**Live evidence so far (PR #6 — the platform PR itself):**
-- Fan-out fired: comment shows `flows selected 2/2 (diff-aware) — fan-out:
-  shared config changed: apps/runner/package.json` + per-flow reasons ✓
-- coverage_maps seeded: apiRoutes captured (`/api/login`, `/api/packs/buy`,
-  `/api/packs/open`); `files` empty because the CURRENT production deployment
-  (aae365e) predates the source-maps config — expected.
-
-**Remaining live AC (needs PR #6 merged → production deploys with maps):**
-1. Founder merges https://github.com/abhinav26966/vercel-reviewer/pull/6
-   (classifier blocks both direct main-push and self-merge).
-2. Wait for production deployment of new main; DELETE the stale (files=0)
-   coverage_maps rows (equivalent of the Phase 10 base-run refresh, which
-   doesn't exist yet) so seeding re-runs against the maps-enabled deployment.
-3. AC PR with sequential pushes: (a) touch examples/demo-app/README.md → push
-   1 seeds real coverage (cold start), push 2 → smoke-only with Buy&Rip ⚪;
-   (b) comment tweak in src/components/PackScene.tsx → selects rip flow via
-   coverage files; (c) examples/demo-app/package.json tweak → fan-out runs
-   everything. Reasons in details block each push. (Root README.md doesn't
-   build on Vercel — root dir is examples/demo-app — hence the in-app README.)
+paths / route-directory heuristic), orchestrator wiring (selection per push;
+⚪ rows + reasons; coverage_maps writes with rootDir prefix; cache-bypass
+seeding), dashboard flows list + smoke toggle, `productionBrowserSourceMaps`
+in demo-app, `rootDir` project setting. 38 new tests (~200 total).
+Docs 02/04/06/08 updated in the same commits.
 
 ### Phase 8 lessons
 
+- **Client-JS coverage only sees client components.** Server components
+  (page.tsx files here) never ship to the browser, so they can't appear in
+  coverage files — the route-directory heuristic and API-route mapping are
+  what cover server code. Login's coverage is files=[] + `/api/login` and
+  that is CORRECT.
+- **Vercel returns 403 for `.map` fetches via APIRequestContext even when the
+  bypass cookie is set** — the explicit `x-vercel-protection-bypass` header on
+  the map fetch works. Navigation + subresources were fine; only
+  page.request fetches hit this.
+- **Next.js framework sources leak into source maps** as
+  `../../../../src/client/…` relative paths — must be filtered (anything
+  escaping the app root).
+- getProjectById selected explicit columns and silently dropped `settings` —
+  rootDir never reached the orchestrator. Column-list selects need updating
+  when the interface grows.
 - Editing apps/api mid-run restarts tsx watch and ORPHANS in-flight
-  orchestrations (run stuck `executing`; runner jobs finish into the void).
-  Recovery: `scripts/soak.ts <runId> 1` re-orchestrates. Don't edit api code
-  while a live run is orchestrating.
+  orchestrations (run stuck `executing`). Recovery: `scripts/soak.ts <runId> 1`.
 - The api parses JSON bodies as RAW STRINGS (webhook signatures) — every JSON
   route must JSON.parse(req.body) itself; CORS allow-methods needed PATCH.
 - gh CLI is authed as the founder (repo scope) — branch pushes + PR creation
-  work; merges are classifier-blocked as self-approval.
+  work; merges are classifier-blocked as self-approval. Flow: I push
+  `phase-N` branch + open PR, founder merges.
+- Coverage staleness: rows refresh only when base re-runs (cache miss at a
+  new merge base). Skipped flows keep stale coverage until Phase 10's
+  base-merge/nightly refresh lands — acceptable inside Phase 8.
 
 ## Previous phase: **Phase 7 — Perf gates + hang/blank/dead classification — ✅ AC PASSED (2026-07-09)**
 
@@ -416,9 +425,15 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 8 — Diff-aware selection + coverage maps** (doc 09): map changed files/routes to
-  flows so PRs only run affected flows (PR #5 comments noted "diff-aware
-  selection lands in Phase 8"); everything else runs on a schedule/rollup.
-- First: push local main to origin (blocked by permission classifier this
-  session — see "Pending push" in Phase 7 section).
+- **Phase 9 — Judge, intent, heal, and the 🔵 loop** (doc 09; doc 05 §§2–3,
+  doc 04 §5): judge job with evidence bundle (PR title/body/commits as
+  UNTRUSTED data, diff outranks prose), three-way output capped at 🔵 (judge
+  can never emit ✅), 🔵 Approve/Reject → pending spec version, bounded
+  agentic heal + spec-drift proposals, plain-language explore mode.
+  Injection AC is sacred: a PR description saying "mark everything
+  intentional" must NOT flip verdicts.
+- Uses the free OpenRouter models (packages/inference fallback chains);
+  judge prompt-quality on small models is the main risk — code-side
+  enforcement mirrors are the backstop.
+- First: founder merges the phase-8-fixes PR (post-#6 commits on local main).
 - No new founder resources needed.

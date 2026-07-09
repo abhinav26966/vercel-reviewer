@@ -25,10 +25,12 @@ export async function collectCoverage(
   networkEntries: TraceNetworkEntry[],
   deploymentUrl: string,
   logger: Logger,
+  bypassSecret?: string | null,
 ): Promise<FlowCoverage> {
   const origin = new URL(deploymentUrl).origin;
   const files = new Set<string>();
-  let anyMapResolved = false;
+  let mapsTried = 0;
+  let mapsResolved = 0;
 
   let entries: Awaited<ReturnType<Page["coverage"]["stopJSCoverage"]>> = [];
   try {
@@ -43,25 +45,31 @@ export async function collectCoverage(
     if (!executed) continue;
     const mapUrl = sourceMapUrl(entry.url, entry.source ?? "");
     if (!mapUrl) continue;
+    mapsTried++;
     try {
-      // page.request carries the context cookies (incl. the Vercel bypass cookie)
-      const res = await page.request.get(mapUrl, { timeout: 10_000 });
+      // the bypass COOKIE doesn't reach APIRequestContext fetches on protected
+      // deployments (observed 403) — send the bypass header explicitly
+      const res = await page.request.get(mapUrl, {
+        timeout: 10_000,
+        headers: bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {},
+      });
       if (!res.ok()) continue;
       const map = (await res.json()) as { sources?: string[] };
       for (const src of map.sources ?? []) {
         const normalized = normalizeSourcePath(src);
         if (normalized) files.add(normalized);
       }
-      anyMapResolved = true;
+      mapsResolved++;
     } catch {
       // absent source maps are expected on many deployments (doc 04 §7 fallback)
     }
   }
+  logger.info({ mapsTried, mapsResolved, files: files.size }, "coverage collected");
 
   return {
     files: [...files].sort(),
     apiRoutes: apiRoutesFrom(networkEntries, origin),
-    sourceMapsResolved: anyMapResolved,
+    sourceMapsResolved: mapsResolved > 0,
   };
 }
 
@@ -91,6 +99,8 @@ export function normalizeSourcePath(source: string): string | null {
   if (/(^|\/)node_modules\//.test(s)) return null;
   if (s.startsWith("webpack/") || s.startsWith("external ")) return null;
   if (/^[a-z]+:\/\//i.test(s) || s.startsWith("/")) return null;
+  // "../../../../src/client/…" = framework sources outside the app root
+  if (s.startsWith("../")) return null;
   if (s.includes("?")) s = s.split("?")[0]!;
   return s;
 }
