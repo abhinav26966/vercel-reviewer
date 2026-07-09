@@ -1,5 +1,7 @@
 "use client";
 
+// r3f scene: the glowing pack the user rips open
+
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useRef, useState } from "react";
 import * as THREE from "three";
