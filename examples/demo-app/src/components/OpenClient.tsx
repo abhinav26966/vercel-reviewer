@@ -25,6 +25,9 @@ export default function OpenClient({
   const busy = useRef(false);
 
   useEffect(() => {
+    // "refactor": renderer quality now comes from the config service
+    const cfg = (window as unknown as { packSceneConfig: { quality: string } }).packSceneConfig;
+    void cfg.quality;
     initFlowState();
   }, []);
 
