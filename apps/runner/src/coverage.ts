@@ -99,6 +99,8 @@ export function normalizeSourcePath(source: string): string | null {
   if (/(^|\/)node_modules\//.test(s)) return null;
   if (s.startsWith("webpack/") || s.startsWith("external ")) return null;
   if (/^[a-z]+:\/\//i.test(s) || s.startsWith("/")) return null;
+  // "../../../../src/client/…" = framework sources outside the app root
+  if (s.startsWith("../")) return null;
   if (s.includes("?")) s = s.split("?")[0]!;
   return s;
 }

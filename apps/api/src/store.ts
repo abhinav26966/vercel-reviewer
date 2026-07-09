@@ -596,6 +596,7 @@ export class DrizzleStore implements Store {
         vercelTokenRef: projects.vercelTokenRef,
         vercelBypassSecretRef: projects.vercelBypassSecretRef,
         baseBranches: projects.baseBranches,
+        settings: projects.settings,
       })
       .from(projects)
       .leftJoin(githubInstallations, eq(projects.githubInstallationId, githubInstallations.id))

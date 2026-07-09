@@ -19,6 +19,11 @@ describe("normalizeSourcePath", () => {
     expect(normalizeSourcePath("/absolute/path.ts")).toBeNull();
   });
 
+  it("drops framework sources that resolve outside the app root", () => {
+    expect(normalizeSourcePath("../../../../src/client/components/app-router.tsx")).toBeNull();
+    expect(normalizeSourcePath("webpack://_N_E/../../../src/shared/lib/utils.ts")).toBeNull();
+  });
+
   it("strips query strings from virtual loaders", () => {
     expect(normalizeSourcePath("webpack://_N_E/./src/app/page.tsx?abc123")).toBe("src/app/page.tsx");
   });
