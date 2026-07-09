@@ -1,6 +1,7 @@
 {
   "name": "@flowguard/demo-app",
   "version": "0.0.0",
+  "description": "Demo Next.js app used as the FlowGuard test target",
   "private": true,
   "scripts": {
     "dev": "next dev",
