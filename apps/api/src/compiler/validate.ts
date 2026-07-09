@@ -1,13 +1,25 @@
 import type { Logger } from "pino";
-import { ExecuteFlowJobSchema, type RunFlowResult } from "@flowguard/schemas";
+import { ExecuteFlowJobSchema, type FlowSpec, type RunFlowResult } from "@flowguard/schemas";
 import type { Store } from "../store.js";
 import { buildConfigBundle, MissingCredentialsError } from "../orchestrator/config-bundle.js";
+import { applyHealPatch } from "../orchestrator/pending-version.js";
 
 /**
  * Draft validation (doc 03 B2.8): run the confirmed draft once against the base
  * branch deployment. Green ⇒ promoted to `official` (archiving the previous
  * official for that flow+branch); red ⇒ stays draft with the failure attached.
+ *
+ * Validation-as-discovery (doc 09 Phase 9 task 4): a draft with steps that
+ * have NO locators (plain-language authoring) runs in `explore` mode — the
+ * heal agent finds each element, and the locators it used are written back
+ * into a NEW draft row for human review. Explore never promotes.
  */
+
+export function draftNeedsExploration(spec: FlowSpec): boolean {
+  return spec.steps.some(
+    (s) => "locators" in s.action && Array.isArray(s.action.locators) && s.action.locators.length === 0,
+  );
+}
 export interface ValidateDeps {
   store: Store;
   logger: Logger;
@@ -96,6 +108,7 @@ export async function validateDraft(
     throw err;
   }
 
+  const explore = draftNeedsExploration(version.spec);
   const jobId = `${run.id}-${version.flowId}-head-${Date.now()}`;
   await deps.enqueueFlowJob(
     ExecuteFlowJobSchema.parse({
@@ -111,7 +124,7 @@ export async function validateDraft(
         deploymentId: deployment.id,
       },
       configBundle,
-      mode: "validate",
+      mode: explore ? "explore" : "validate",
       collect: { coverage: false, har: true, video: true },
       abortToken: run.id,
     }),
@@ -129,6 +142,34 @@ export async function validateDraft(
   });
   const passed = result.status === "passed";
   await store.updateRun(run.id, { state: passed ? "done" : "errored", finishedAt: new Date() });
+
+  if (explore) {
+    // discovery: write the locators the agent used back into a NEW draft row
+    const patches = ([] as unknown[]).concat(result.healAttempt.proposedPatch ?? []);
+    if (patches.length > 0) {
+      let spec = version.spec;
+      for (const patch of patches) spec = applyHealPatch(spec, patch);
+      const newDraftId = await store.insertFlowVersion({
+        flowId: version.flowId,
+        spec,
+        status: "draft",
+        branch: version.branch,
+        source: "plain_language",
+        sourceRecordingId: version.sourceRecordingId,
+        supersedesVersionId: version.id,
+        compilationReport: {
+          ...(version.compilationReport ?? {}),
+          exploredAt: new Date().toISOString(),
+          exploreResolvedSteps: patches.length,
+        },
+      });
+      await store.setVersionStatus(version.id, "archived");
+      logger.info({ versionId, newDraftId, resolved: patches.length }, "explore resolved locators into a new draft");
+      return { passed: false, result, error: `explore resolved ${patches.length} step(s) — review draft ${newDraftId}` };
+    }
+    logger.warn({ versionId }, "explore run resolved no locators — draft unchanged");
+    return { passed: false, result, error: "explore resolved no locators" };
+  }
 
   if (passed) {
     await store.promoteVersionToOfficial(versionId);

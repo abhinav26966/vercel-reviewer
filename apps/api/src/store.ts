@@ -180,9 +180,42 @@ export interface Store {
     verdict: VerdictKind;
     humanCopy: string;
     evidence: Record<string, unknown>;
-  }): Promise<void>;
+    confidence?: number | null;
+    rationale?: string | null;
+    /** 'awaiting' for 🔵 rows (doc 05 §3.6). */
+    approvalState?: string | null;
+  }): Promise<string>;
   /** Reruns replace a run's verdicts wholesale. */
   deleteVerdictsForRun(runId: string): Promise<void>;
+  getVerdictById(verdictId: string): Promise<{
+    id: string;
+    runId: string;
+    flowId: string;
+    verdict: string;
+    humanCopy: string;
+    rationale: string | null;
+    approvalState: string | null;
+    pendingVersionId: string | null;
+  } | null>;
+  setVerdictApproval(
+    verdictId: string,
+    patch: { approvalState: string; pendingVersionId?: string | null; verdict?: VerdictKind },
+  ): Promise<void>;
+  /** 🔵 rows awaiting a human decision (dashboard approval panel). */
+  listAwaitingVerdicts(projectId: string): Promise<
+    Array<{ id: string; runId: string; flowId: string; flowName: string; humanCopy: string; rationale: string | null }>
+  >;
+  /** Current official (or quarantined) version for (flow, branch). */
+  getOfficialVersion(flowId: string, branch: string): Promise<{ id: string; spec: FlowSpec } | null>;
+  getRunFlowResult(
+    runId: string,
+    flowId: string,
+    target: "head" | "base",
+  ): Promise<{ id: string; result: RunFlowResult } | null>;
+  /** Recent successful heals with spec patches (dashboard "spec drift" panel). */
+  listHealPatches(projectId: string): Promise<
+    Array<{ resultId: string; runId: string; flowId: string; flowName: string; patch: unknown }>
+  >;
   /** Perf baseline write path (doc 05 §4); refreshed by base runs in Phase 10. */
   upsertPerfBaseline(input: {
     flowId: string;
@@ -255,6 +288,8 @@ export interface Store {
     sourceRecordingId?: string | null;
     supersedesVersionId?: string | null;
     compilationReport?: Record<string, unknown> | null;
+    /** For 'pending' versions minted from an approved 🔵 (doc 05 §3.6). */
+    approvedFromRunId?: string | null;
   }): Promise<string>;
   getFlowVersion(versionId: string): Promise<{
     id: string;
@@ -881,6 +916,7 @@ export class DrizzleStore implements Store {
     sourceRecordingId?: string | null;
     supersedesVersionId?: string | null;
     compilationReport?: Record<string, unknown> | null;
+    approvedFromRunId?: string | null;
   }): Promise<string> {
     const id = newId("flowSpecVersion");
     await this.db.insert(flowSpecVersions).values({
@@ -892,6 +928,7 @@ export class DrizzleStore implements Store {
       source: input.source,
       sourceRecordingId: input.sourceRecordingId ?? null,
       supersedesVersionId: input.supersedesVersionId ?? null,
+      approvedFromRunId: input.approvedFromRunId ?? null,
       compilationReport: input.compilationReport ?? null,
     });
     return id;
@@ -980,15 +1017,129 @@ export class DrizzleStore implements Store {
     verdict: VerdictKind;
     humanCopy: string;
     evidence: Record<string, unknown>;
-  }): Promise<void> {
+    confidence?: number | null;
+    rationale?: string | null;
+    approvalState?: string | null;
+  }): Promise<string> {
+    const id = newId("verdict");
     await this.db.insert(verdicts).values({
-      id: newId("verdict"),
+      id,
       runId: input.runId,
       flowId: input.flowId,
       verdict: input.verdict,
       humanCopy: input.humanCopy,
       evidence: input.evidence,
+      confidence: input.confidence ?? null,
+      rationale: input.rationale ?? null,
+      approvalState: input.approvalState ?? null,
     });
+    return id;
+  }
+
+  async getVerdictById(verdictId: string) {
+    const rows = await this.db
+      .select({
+        id: verdicts.id,
+        runId: verdicts.runId,
+        flowId: verdicts.flowId,
+        verdict: verdicts.verdict,
+        humanCopy: verdicts.humanCopy,
+        rationale: verdicts.rationale,
+        approvalState: verdicts.approvalState,
+        pendingVersionId: verdicts.pendingVersionId,
+      })
+      .from(verdicts)
+      .where(eq(verdicts.id, verdictId))
+      .limit(1);
+    const r = rows[0];
+    return r ? { ...r, runId: r.runId!, flowId: r.flowId! } : null;
+  }
+
+  async setVerdictApproval(
+    verdictId: string,
+    patch: { approvalState: string; pendingVersionId?: string | null; verdict?: VerdictKind },
+  ): Promise<void> {
+    await this.db
+      .update(verdicts)
+      .set({
+        approvalState: patch.approvalState,
+        ...(patch.pendingVersionId !== undefined ? { pendingVersionId: patch.pendingVersionId } : {}),
+        ...(patch.verdict ? { verdict: patch.verdict } : {}),
+      })
+      .where(eq(verdicts.id, verdictId));
+  }
+
+  async listAwaitingVerdicts(projectId: string) {
+    const rows = await this.db
+      .select({
+        id: verdicts.id,
+        runId: verdicts.runId,
+        flowId: verdicts.flowId,
+        flowName: flows.name,
+        humanCopy: verdicts.humanCopy,
+        rationale: verdicts.rationale,
+      })
+      .from(verdicts)
+      .innerJoin(flows, eq(verdicts.flowId, flows.id))
+      .where(and(eq(flows.projectId, projectId), eq(verdicts.approvalState, "awaiting")))
+      .orderBy(desc(verdicts.createdAt));
+    return rows.map((r) => ({ ...r, runId: r.runId!, flowId: r.flowId! }));
+  }
+
+  async getOfficialVersion(flowId: string, branch: string) {
+    const rows = await this.db
+      .select({ id: flowSpecVersions.id, spec: flowSpecVersions.spec })
+      .from(flowSpecVersions)
+      .where(
+        and(
+          eq(flowSpecVersions.flowId, flowId),
+          eq(flowSpecVersions.branch, branch),
+          inArray(flowSpecVersions.status, ["official", "quarantined"]),
+        ),
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async getRunFlowResult(runId: string, flowId: string, target: "head" | "base") {
+    const rows = await this.db
+      .select({ id: runFlowResults.id, result: runFlowResults.result })
+      .from(runFlowResults)
+      .where(
+        and(
+          eq(runFlowResults.runId, runId),
+          eq(runFlowResults.flowId, flowId),
+          eq(runFlowResults.target, target),
+        ),
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async listHealPatches(projectId: string) {
+    const rows = await this.db
+      .select({
+        resultId: runFlowResults.id,
+        runId: runFlowResults.runId,
+        flowId: runFlowResults.flowId,
+        flowName: flows.name,
+        result: runFlowResults.result,
+      })
+      .from(runFlowResults)
+      .innerJoin(flows, eq(runFlowResults.flowId, flows.id))
+      .where(and(eq(flows.projectId, projectId), eq(runFlowResults.target, "head")))
+      .orderBy(desc(runFlowResults.createdAt))
+      .limit(50);
+    return rows
+      .filter((r) => r.result.healAttempt.succeeded && r.result.healAttempt.proposedPatch)
+      .slice(0, 10)
+      .map((r) => ({
+        resultId: r.resultId,
+        runId: r.runId!,
+        flowId: r.flowId!,
+        flowName: r.flowName,
+        patch: r.result.healAttempt.proposedPatch,
+      }));
   }
 
   async listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]> {

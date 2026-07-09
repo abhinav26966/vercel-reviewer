@@ -414,6 +414,79 @@ describe("orchestrateRun — credentials & personas", () => {
   });
 });
 
+// ── Phase 9: the intent judge in the run loop ──────────────────────────────
+describe("orchestrateRun — intent judge", () => {
+  const blueOutput = {
+    outcome: "changed_as_intended",
+    confidence: 0.9,
+    rationale: "PR describes renaming the CTA and the diff touches the shop page.",
+    humanCopy: "matches PR intent to rename the shop CTA",
+  };
+
+  function judgeHarness(opts: { changedFiles: string[]; modelOutcome?: string }) {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "failed") },
+      baseResults: { flw_rip: result("base", "passed") },
+      changedFiles: opts.changedFiles,
+    });
+    // coverage exists so selection + correlation have something to intersect
+    h.store.coverageMapRows.push({
+      flowId: "flw_rip",
+      branch: "main",
+      sha: "old",
+      files: ["src/rip.ts", "src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"],
+      apiRoutes: [],
+    });
+    const judgeCalls: string[] = [];
+    h.deps.inference = {
+      judge: async ({ prompt }: { prompt: string }) => {
+        judgeCalls.push(prompt);
+        return { result: { ...blueOutput, outcome: opts.modelOutcome ?? "changed_as_intended" } as never };
+      },
+    } as never;
+    h.deps.dashboardUrl = "http://localhost:3100";
+    return { ...h, judgeCalls };
+  }
+
+  it("broken + correlated diff + model says intended → 🔵 with approval link, pending status", async () => {
+    const h = judgeHarness({ changedFiles: ["src/rip.ts"] });
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.store.verdicts[0]!.verdict).toBe("changed_as_intended");
+    expect(h.store.verdicts[0]!.approvalState).toBe("awaiting");
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain("🔵 changed as intended");
+    expect(comment).toContain("review & approve");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "pending" });
+    // the prompt quarantined the PR text as untrusted
+    expect(h.judgeCalls[0]).toContain("UNTRUSTED author-controlled data");
+  });
+
+  it("broken + UNRELATED diff → stays 🔴 even when the model says intended (code mirror)", async () => {
+    const h = judgeHarness({ changedFiles: ["src/lib/dates.ts"] });
+    // selection would skip an uncorrelated flow — force it through the smoke tier
+    h.store.officialFlows[0]!.tier = "smoke";
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.store.verdicts[0]!.verdict).toBe("broken");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "failure" });
+  });
+
+  it("model says regression → 🔴; judge absent → 🔴", async () => {
+    const h = judgeHarness({ changedFiles: ["src/rip.ts"], modelOutcome: "regression" });
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.store.verdicts[0]!.verdict).toBe("broken");
+
+    const h2 = makeHarness({
+      headResults: { flw_rip: result("head", "failed") },
+      baseResults: { flw_rip: result("base", "passed") },
+      changedFiles: ["src/rip.ts"],
+    });
+    await orchestrateRun(h2.deps, "run_1");
+    expect(h2.store.verdicts[0]!.verdict).toBe("broken");
+  });
+});
+
 // ── Phase 8: diff-aware selection + coverage maps ──────────────────────────
 describe("orchestrateRun — diff-aware selection", () => {
   const twoFlows = [

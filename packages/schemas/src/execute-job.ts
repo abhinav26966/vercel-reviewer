@@ -75,6 +75,8 @@ export const ExecuteFlowJobSchema = z.object({
     har: z.boolean().default(true),
     video: z.boolean().default(true),
   }),
+  /** Bounded agentic heal on step failure (doc 04 §5); head targets only. */
+  agentHeal: z.boolean().default(false),
   abortToken: z.string().nullable().default(null),
 });
 

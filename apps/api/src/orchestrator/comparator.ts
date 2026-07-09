@@ -127,6 +127,13 @@ export function compareFlow(params: {
 
   if (head.status === "passed") {
     const secs = (head.perf.flowTotalMs / 1000).toFixed(1);
+    // healed pass (doc 04 §5): green, but the selector drift is surfaced
+    if (head.healAttempt.succeeded) {
+      return {
+        verdict: "passing",
+        detail: `${secs}s — step succeeded via adaptive retry; selector likely changed (spec-drift proposal in dashboard)`,
+      };
+    }
     // perf gate — only when a base measurement exists to compare against
     if (base && base.status === "passed") {
       const regressions = computePerfRegressions(spec, head, base);

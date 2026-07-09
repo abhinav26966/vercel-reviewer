@@ -20,6 +20,7 @@ A runner process receives one `ExecuteFlowJob` (the job also embeds the full `sp
   },
   "mode": "measure",                      // warmup | measure | validate | explore
   "collect": { "coverage": true, "har": true, "video": true },
+  "agentHeal": false,                     // bounded heal on step failure (§5); head targets only
   "abortToken": "…"
 }
 ```

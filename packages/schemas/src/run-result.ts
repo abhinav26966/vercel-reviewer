@@ -96,6 +96,8 @@ export const RunDiagnosticsSchema = z.object({
   blankScreenScore: z.number().min(0).max(1).default(0),
   /** Human phrase from the hung/dead classifier, e.g. "Next.js error overlay present". */
   failureDetail: z.string().nullable().default(null),
+  /** Heal-agent action log (doc 04 §5) — judge evidence on heal failure. */
+  healTranscript: z.array(z.string()).default([]),
 });
 
 export const HealAttemptSchema = z.object({
