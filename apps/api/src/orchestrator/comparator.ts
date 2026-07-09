@@ -1,98 +1,6 @@
 import type { FlowSpec, RunFlowResult, VerdictKind } from "@flowguard/schemas";
 
 /**
- * Dual-threshold perf gate with mandatory attribution (doc 04 §4): flag only if
- * `head > base × relativeFactor` AND `head − base > absoluteFloorMs`, and only
- * when the delta can be attributed to a network request or client time. An
- * unattributed delta is suppressed — false positives are death.
- */
-export interface PerfFinding {
-  stepId: string;
-  stepTitle: string;
-  baseMs: number;
-  headMs: number;
-  attribution:
-    | { kind: "network"; request: string; baseTtfb: number; headTtfb: number }
-    | { kind: "client"; settleDelta: number };
-}
-
-export function computePerfRegressions(
-  spec: FlowSpec,
-  head: RunFlowResult,
-  base: RunFlowResult,
-): PerfFinding[] {
-  const { relativeFactor, absoluteFloorMs } = spec.budgets.perStepDefaults;
-  const findings: PerfFinding[] = [];
-  for (const headStep of head.steps) {
-    const baseStep = base.steps.find((s) => s.id === headStep.id);
-    const stepSpec = spec.steps.find((s) => s.id === headStep.id);
-    if (!baseStep || !stepSpec?.timingBaselineKey) continue;
-    const delta = headStep.durationMs - baseStep.durationMs;
-    if (!(headStep.durationMs > baseStep.durationMs * relativeFactor && delta > absoluteFloorMs)) continue;
-
-    // attribution: which request's server time exploded?
-    let best: { request: string; baseTtfb: number; headTtfb: number; growth: number } | null = null;
-    for (const headReq of headStep.network) {
-      if (!["fetch", "xhr", "document"].includes(headReq.resourceType)) continue;
-      const headPath = pathOf(headReq.url);
-      const baseReq = baseStep.network.find(
-        (b) => b.method === headReq.method && pathOf(b.url) === headPath,
-      );
-      if (!baseReq) continue;
-      const growth = headReq.ttfbMs - baseReq.ttfbMs;
-      if (growth > 0 && (!best || growth > best.growth)) {
-        best = {
-          request: `${headReq.method} ${headPath}`,
-          baseTtfb: baseReq.ttfbMs,
-          headTtfb: headReq.ttfbMs,
-          growth,
-        };
-      }
-    }
-    if (best && best.growth >= delta * 0.4) {
-      findings.push({
-        stepId: headStep.id,
-        stepTitle: stepSpec.title,
-        baseMs: baseStep.durationMs,
-        headMs: headStep.durationMs,
-        attribution: {
-          kind: "network",
-          request: best.request,
-          baseTtfb: best.baseTtfb,
-          headTtfb: best.headTtfb,
-        },
-      });
-      continue;
-    }
-    const settleDelta = headStep.settleMs - baseStep.settleMs;
-    if (settleDelta >= delta * 0.4) {
-      findings.push({
-        stepId: headStep.id,
-        stepTitle: stepSpec.title,
-        baseMs: baseStep.durationMs,
-        headMs: headStep.durationMs,
-        attribution: { kind: "client", settleDelta },
-      });
-      continue;
-    }
-    // unattributed → suppressed (doc 04 §4)
-  }
-  return findings;
-}
-
-function pathOf(url: string): string {
-  try {
-    return new URL(url, "http://x").pathname;
-  } catch {
-    return url;
-  }
-}
-
-export function formatMs(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-}
-
-/**
  * Pre-LLM comparator (doc 09 Phase 3 task 3; taxonomy doc 05 §1):
  *   head pass                       → ✅ passing
  *   head env-class                  → 🟣 env_issue (never blame the flow for the world)
@@ -127,21 +35,6 @@ export function compareFlow(params: {
 
   if (head.status === "passed") {
     const secs = (head.perf.flowTotalMs / 1000).toFixed(1);
-    // perf gate — only when a base measurement exists to compare against
-    if (base && base.status === "passed") {
-      const regressions = computePerfRegressions(spec, head, base);
-      if (regressions.length > 0) {
-        const worst = regressions.reduce((a, b) => (b.headMs - b.baseMs > a.headMs - a.baseMs ? b : a));
-        const attribution =
-          worst.attribution.kind === "network"
-            ? `\`${worst.attribution.request}\` TTFB ${formatMs(worst.attribution.baseTtfb)}→${formatMs(worst.attribution.headTtfb)}`
-            : `client time (+${formatMs(worst.attribution.settleDelta)} settle)`;
-        return {
-          verdict: "slower",
-          detail: `step ${worst.stepId} "${worst.stepTitle}": ${formatMs(worst.baseMs)} → ${formatMs(worst.headMs)} — ${attribution}`,
-        };
-      }
-    }
     return { verdict: "passing", detail: `${secs}s` };
   }
 
@@ -152,10 +45,9 @@ export function compareFlow(params: {
     };
   }
 
-  // head genuinely failed/hung/died at a step
+  // head genuinely failed a step
   const failureDetail = describeFailure(spec, head, link);
 
-  // the honesty rule (doc 04 §4): blaming the PR requires base-side green
   if (base && base.status !== "passed" && base.status !== "error") {
     return {
       verdict: "already_broken_on_base",
@@ -168,8 +60,6 @@ export function compareFlow(params: {
       detail: `flow failed on head but base comparison was unavailable — review manually · ${failureDetail}`,
     };
   }
-  if (head.status === "hung") return { verdict: "hung", detail: failureDetail };
-  if (head.status === "dead") return { verdict: "dead", detail: failureDetail };
   return { verdict: "broken", detail: failureDetail };
 }
 

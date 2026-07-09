@@ -11,7 +11,6 @@ import { redactHarFile } from "./har-redact.js";
 import { NetworkTracker } from "./network-tracker.js";
 import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
-import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
 import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
@@ -58,11 +57,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   };
   let failedStepId: string | null = null;
   let failure: StepFailure | null = null;
-  let outcome: "passed" | "failed" | "error" | "skipped" | "hung" | "dead" = "passed";
-  let failureDetail: string | null = null;
-  let nextErrorOverlay = false;
-  let blankScore = 0;
-  let failureClassOverride: string | null = null;
+  let outcome: "passed" | "failed" | "error" | "skipped" = "passed";
   const flowStart = Date.now();
   const tracker = new NetworkTracker();
 
@@ -161,58 +156,31 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       }
 
       const stepStart = Date.now();
-      const pageErrorsBefore = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
-      let attempt = await runStepOnce(stepCtx, step);
-      if (attempt.failure) {
+      let attemptFailure = await runStepOnce(stepCtx, step);
+      if (attemptFailure) {
         // one deterministic retry: page may have been mid-hydration (doc 04 §3)
-        logger.warn({ step: step.id, reason: attempt.failure.message }, "step failed — deterministic retry");
-        attempt = await runStepOnce(stepCtx, step);
+        logger.warn({ step: step.id, reason: attemptFailure.message }, "step failed — deterministic retry");
+        attemptFailure = await runStepOnce(stepCtx, step);
       }
       const stepEnd = Date.now();
-      const stepNetwork = tracker.window(stepStart, stepEnd);
 
-      let screenshotKey: string | null = null;
-      if (attempt.failure) {
-        // classify BEFORE the bundle capture so the score comes from the same shot
-        const shot = await page.screenshot({ timeout: 5000 }).catch(() => null);
-        blankScore = shot ? blankScreenScore(shot) : 0;
-        nextErrorOverlay = await detectNextErrorOverlay(page);
-        screenshotKey = await captureFailureBundle(page, step, artifacts, job, tracker, consoleLines, logger, shot);
-      }
+      const screenshotKey = attemptFailure
+        ? await captureFailureBundle(page, step, artifacts, job, tracker, consoleLines, logger)
+        : null;
 
       steps.push({
         id: step.id,
         durationMs: stepEnd - stepStart,
-        settleMs: attempt.settleMs,
-        network: stepNetwork,
+        settleMs: 0, // measured properly with the perf work in Phase 7
+        network: tracker.window(stepStart, stepEnd),
         screenshot: screenshotKey,
-        assertions: attempt.failure?.assertions ?? lastPassedAssertions(step),
+        assertions: attemptFailure?.assertions ?? lastPassedAssertions(step),
       });
 
-      if (attempt.failure) {
+      if (attemptFailure) {
         failedStepId = step.id;
-        failure = attempt.failure;
-        if (attempt.failure.failureClass === "assertion") {
-          // the slow/hung/dead spectrum (doc 04 §4)
-          const pageErrorsNow = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
-          const cls = classifyFailure({
-            settleTimedOut: attempt.settleTimedOut,
-            pendingRequests: tracker.pendingRequests(),
-            stepNetwork,
-            pageCrashed,
-            pageErrors: pageErrorsNow - pageErrorsBefore,
-            nextErrorOverlay,
-            blankScreenScore: blankScore,
-          });
-          outcome = cls.status;
-          failureClassOverride = cls.failureClass;
-          failureDetail = cls.detail;
-          if (cls.detail) {
-            failure = { ...failure, message: `${failure.message} · ${cls.detail}` };
-          }
-        } else {
-          outcome = "failed";
-        }
+        failure = attemptFailure;
+        outcome = "failed";
         break; // subsequent steps are skipped (doc 04 §3)
       }
     }
@@ -265,7 +233,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   }
 
   function finalize(
-    status: "passed" | "failed" | "error" | "skipped" | "hung" | "dead",
+    status: "passed" | "failed" | "error" | "skipped",
     failedStep: string | null,
     fail: StepFailure | null,
   ): RunFlowResult {
@@ -280,7 +248,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         failureClass:
           status === "error" && fail?.message.startsWith("login failed")
             ? "login_failed"
-            : (failureClassOverride ?? fail?.failureClass ?? null),
+            : (fail?.failureClass ?? null),
         steps,
         perf: { flowTotalMs: Date.now() - flowStart, regressions: [] },
         artifacts: artifactKeys,
@@ -288,9 +256,8 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           pendingRequestsAtTimeout: tracker.pendingRequests(),
           consoleErrors: consoleErrors.slice(-20),
           pageCrashed,
-          nextErrorOverlay,
-          blankScreenScore: blankScore,
-          ...(failureDetail ? {} : {}),
+          nextErrorOverlay: false, // classifier lands in Phase 7
+          blankScreenScore: 0,
         },
       }),
     );
@@ -309,10 +276,9 @@ async function captureFailureBundle(
   tracker: NetworkTracker,
   consoleLines: Array<{ ts: number; text: string }>,
   logger: Logger,
-  existingShot?: Buffer | null,
 ): Promise<string | null> {
   try {
-    const shot = existingShot ?? (await page.screenshot({ timeout: 5000 }));
+    const shot = await page.screenshot({ timeout: 5000 });
     const key = await artifacts.putBuffer(
       artifactKey(job, `steps/${step.id}/failure.png`),
       shot,

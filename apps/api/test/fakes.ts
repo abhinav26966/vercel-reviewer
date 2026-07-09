@@ -263,15 +263,6 @@ export class FakeStore implements Store {
     this.verdicts = this.verdicts.filter((v) => v.runId !== runId);
   }
 
-  perfBaselineRows: Array<{ flowId: string; branch: string; sha: string; stepKey: string; medianMs: number; samples: number }> = [];
-
-  async upsertPerfBaseline(input: { flowId: string; branch: string; sha: string; stepKey: string; medianMs: number; samples: number }) {
-    this.perfBaselineRows = this.perfBaselineRows.filter(
-      (r) => !(r.flowId === input.flowId && r.branch === input.branch && r.sha === input.sha && r.stepKey === input.stepKey),
-    );
-    this.perfBaselineRows.push(input);
-  }
-
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   recordings: Array<{
     id: string;
