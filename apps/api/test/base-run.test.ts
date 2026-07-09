@@ -140,6 +140,25 @@ describe("orchestrateBaseRun — reconciliation (doc 05 §5)", () => {
     expect(h.store.alertRows.filter((a) => a.kind === "base_broken")).toHaveLength(0);
   });
 
+  it("two pendings: the NEWEST is promoted, the stale sibling is archived", async () => {
+    const h = harness({ officialResult: "failed", pending: true, pendingResult: "passed" });
+    // an older, stale pending created before fsv_pending
+    h.store.versionRows.splice(1, 0, {
+      id: "fsv_pending_stale",
+      flowId: "flw_rip",
+      spec,
+      status: "pending",
+      branch: "main",
+      source: "baseline_promotion",
+      sourceRecordingId: null,
+      compilationReport: null,
+    });
+    await orchestrateBaseRun(h.deps, "run_b1");
+
+    expect(h.store.versionRows.find((v) => v.id === "fsv_pending")!.status).toBe("official");
+    expect(h.store.versionRows.find((v) => v.id === "fsv_pending_stale")!.status).toBe("archived");
+  });
+
   it("both red → baseline_conflict alert, official quarantined, pending held", async () => {
     const h = harness({ officialResult: "failed", pending: true, pendingResult: "failed" });
     await orchestrateBaseRun(h.deps, "run_b1");

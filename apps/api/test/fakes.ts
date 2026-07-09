@@ -302,6 +302,14 @@ export class FakeStore implements Store {
     if (f) f.tier = tier;
   }
 
+  async archiveOtherPendings(flowId: string, branch: string, exceptVersionId: string) {
+    for (const v of this.versionRows) {
+      if (v.flowId === flowId && v.branch === branch && v.status === "pending" && v.id !== exceptVersionId) {
+        v.status = "archived";
+      }
+    }
+  }
+
   async listFlows(projectId: string) {
     return this.officialFlows
       .filter((f) => f.projectId === projectId)
@@ -553,7 +561,10 @@ export class FakeStore implements Store {
           return o ? { id: o.specVersionId, status: "official", spec: o.spec } : null;
         })();
       if (!official) continue;
-      const pending = this.versionRows.find((v) => v.flowId === f.flowId && v.branch === branch && v.status === "pending");
+      // newest pending wins (array order = creation order in the fake)
+      const pending = [...this.versionRows]
+        .reverse()
+        .find((v) => v.flowId === f.flowId && v.branch === branch && v.status === "pending");
       suite.push({
         flowId: f.flowId,
         flowName: f.flowName,

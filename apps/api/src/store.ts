@@ -274,6 +274,8 @@ export interface Store {
   }): Promise<void>;
   /** Smoke-tier toggle (doc 06 §4.2). */
   setFlowTier(flowId: string, tier: "smoke" | "standard"): Promise<void>;
+  /** After promoting one pending, retire its stale siblings (superseded approvals). */
+  archiveOtherPendings(flowId: string, branch: string, exceptVersionId: string): Promise<void>;
   /** Dashboard flow list (all flows incl. archived, with tier). */
   listFlows(
     projectId: string,
@@ -859,6 +861,20 @@ export class DrizzleStore implements Store {
     await this.db.update(flows).set({ tier }).where(eq(flows.id, flowId));
   }
 
+  async archiveOtherPendings(flowId: string, branch: string, exceptVersionId: string): Promise<void> {
+    await this.db
+      .update(flowSpecVersions)
+      .set({ status: "archived" })
+      .where(
+        and(
+          eq(flowSpecVersions.flowId, flowId),
+          eq(flowSpecVersions.branch, branch),
+          eq(flowSpecVersions.status, "pending"),
+          ne(flowSpecVersions.id, exceptVersionId),
+        ),
+      );
+  }
+
   async listFlows(projectId: string) {
     return this.db
       .select({ id: flows.id, name: flows.name, tier: flows.tier, archived: flows.archived })
@@ -886,7 +902,9 @@ export class DrizzleStore implements Store {
           eq(flowSpecVersions.branch, branch),
           inArray(flowSpecVersions.status, ["official", "quarantined", "pending"]),
         ),
-      );
+      )
+      // multiple pendings can exist (several approvals); the NEWEST wins below
+      .orderBy(desc(flowSpecVersions.createdAt));
     const byFlow = new Map<string, (typeof rows)[number][]>();
     for (const r of rows) {
       byFlow.set(r.flowId, [...(byFlow.get(r.flowId) ?? []), r]);

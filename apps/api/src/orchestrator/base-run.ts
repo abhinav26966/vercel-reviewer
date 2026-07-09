@@ -233,6 +233,7 @@ async function reconcileFlow(
   if (f.pending && pending) {
     if (pendingGreen) {
       await store.promoteVersionToOfficial(f.pending.versionId);
+      await store.archiveOtherPendings(f.flowId, branch, f.pending.versionId);
       await store.acknowledgeAlerts(projectId, "base_broken", f.flowId);
       await refreshBaselines(pending, f.official.spec, 1);
       logger.info({ flow: f.flowId, promoted: f.pending.versionId }, "pending version matches new base — promoted");
