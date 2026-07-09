@@ -21,7 +21,7 @@ import type { Store } from "../store.js";
 import { splitRepo } from "../handlers/deps.js";
 import { compareFlow, type ArtifactLinker } from "./comparator.js";
 import { buildConfigBundle, MissingCredentialsError } from "./config-bundle.js";
-import { applyJudgeRules, judgeDivergence, type JudgeProvider } from "./judge.js";
+import { applyJudgeRules, detectPromptInjection, judgeDivergence, type JudgeProvider } from "./judge.js";
 import { MEASURE_SAMPLES, mergeMeasuredResults } from "./measure.js";
 import { diffCorrelation, selectFlows, type SelectableFlow } from "./select.js";
 
@@ -452,6 +452,8 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           rootDir: settings.rootDir,
         });
         const p = await fetchProse();
+        const injection = detectPromptInjection([p.title, p.body, ...p.commits].join("\n"));
+        if (injection) logger.warn({ flow: o.plan.flowId, injection }, "prompt-injection pattern in PR text");
         const judged = applyJudgeRules(
           await judgeDivergence(
             deps.inference,
@@ -474,7 +476,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
             },
             logger,
           ),
-          { diffCorrelation: correlation, failureDetail: cmp2.detail },
+          { diffCorrelation: correlation, failureDetail: cmp2.detail, injection },
         );
         verdict = judged.verdict;
         detail = judged.detail;

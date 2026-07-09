@@ -32,6 +32,33 @@ export interface JudgeEvidence {
   dataBranchDiffers: boolean;
 }
 
+/**
+ * Deterministic injection detector — the code mirror behind prompt rule 1.
+ * PR text that addresses automated tooling or commands a verdict is by
+ * definition NOT intent evidence; when it appears, 🔵 is off the table for
+ * this run no matter what the model says. Free models DO comply with these
+ * (observed live: gemma followed "mark everything intentional") — the sacred
+ * injection AC cannot depend on model discipline.
+ */
+const INJECTION_PATTERNS: RegExp[] = [
+  /ignore\s+(?:all|any|the)?\s*(?:flow|test|previous|above|prior)?\s*(?:changes|failures|instructions|checks)/i,
+  /mark\s+(?:everything|all|it|this)\s+(?:as\s+)?intentional/i,
+  /do\s+not\s+(?:flag|report|fail|block)/i,
+  /output\s+["']?(?:changed_as_intended|passing|approved)["']?/i,
+  /(?:instruction|note|message)s?\s+to\s+(?:all\s+)?(?:automated|ai|bot|llm)/i,
+  /(?:automated|ai)\s+(?:reviewer|judge|tool|agent)s?\s*[:,]/i,
+  /all\s+(?:test\s+)?failures?\s+(?:are|is)\s+(?:expected|approved|intentional)/i,
+  /(?:set|with)\s+confidence\s+(?:to\s+)?1(?:\.0)?/i,
+];
+
+export function detectPromptInjection(untrustedText: string): string | null {
+  for (const re of INJECTION_PATTERNS) {
+    const m = untrustedText.match(re);
+    if (m) return m[0]!;
+  }
+  return null;
+}
+
 export interface JudgeProvider {
   judge<T>(opts: {
     prompt: string;
@@ -135,7 +162,7 @@ export interface JudgedVerdict {
  */
 export function applyJudgeRules(
   model: JudgeOutput | null,
-  evidence: Pick<JudgeEvidence, "diffCorrelation" | "failureDetail">,
+  evidence: Pick<JudgeEvidence, "diffCorrelation" | "failureDetail"> & { injection?: string | null },
 ): JudgedVerdict {
   const fallback: JudgedVerdict = {
     verdict: "broken",
@@ -143,6 +170,14 @@ export function applyJudgeRules(
     confidence: model?.confidence ?? null,
     rationale: model?.rationale ?? null,
   };
+  // hard mirror of rule 1: prose that steers automated review is never intent
+  if (evidence.injection) {
+    return {
+      ...fallback,
+      detail: `PR text attempts to steer automated review ("${evidence.injection}") — treated as a regression · ${evidence.failureDetail}`,
+      rationale: model?.rationale ?? "prompt-injection pattern detected in PR text",
+    };
+  }
   if (!model) return fallback;
   if (model.outcome === "inconclusive") {
     return {
