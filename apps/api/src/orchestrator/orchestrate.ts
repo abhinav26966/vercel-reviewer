@@ -447,6 +447,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         credentialsUrl: deps.dashboardUrl
           ? `${deps.dashboardUrl}/projects/${project.id}?pr=${pr.number}`
           : undefined,
+        changedFiles,
       });
 
       let verdict: VerdictKind = cmp2.verdict;

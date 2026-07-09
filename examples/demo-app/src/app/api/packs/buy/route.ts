@@ -24,6 +24,12 @@ export async function POST(req: NextRequest) {
     return withSession(res, { ...session, packs: session.packs + 1 });
   }
 
+  // Env chaos: CHECKOUT_LIVE_SIM=1 redirects to a page carrying LIVE-mode
+  // markers — exercises the runner's live-mode guard without live keys.
+  if (process.env.CHECKOUT_LIVE_SIM === "1") {
+    return NextResponse.redirect(new URL("/live-checkout-sim", req.url), 303);
+  }
+
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
   const checkout = await stripe.checkout.sessions.create({
     mode: "payment",

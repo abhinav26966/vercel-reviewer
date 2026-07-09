@@ -65,6 +65,16 @@ interface AlertRow {
   createdAt: string;
 }
 
+interface PaymentConfigRow {
+  id: string;
+  scope: string;
+  prNumber: number | null;
+  provider: string;
+  cardLast4: string | null;
+  expiry: string | null;
+  testCardRecognized: boolean;
+}
+
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [creds, setCreds] = useState<CredentialSet[]>([]);
@@ -72,6 +82,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [awaiting, setAwaiting] = useState<AwaitingVerdict[]>([]);
   const [healPatches, setHealPatches] = useState<HealPatch[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [paymentConfigs, setPaymentConfigs] = useState<PaymentConfigRow[]>([]);
+  const [payForm, setPayForm] = useState({ scope: "project", prNumber: "", card: "", expiry: "", cvc: "", consent: false });
+  const [payWarning, setPayWarning] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
@@ -90,11 +103,41 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     api<AwaitingVerdict[]>(`/api/projects/${id}/verdicts`).then(setAwaiting).catch(() => {});
     api<HealPatch[]>(`/api/projects/${id}/heal-patches`).then(setHealPatches).catch(() => {});
     api<AlertRow[]>(`/api/projects/${id}/alerts`).then(setAlerts).catch(() => {});
+    api<PaymentConfigRow[]>(`/api/projects/${id}/payment-configs`).then(setPaymentConfigs).catch(() => {});
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
     api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
     api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
   }, [id]);
   useEffect(refresh, [refresh]);
+
+  async function submitPayment(confirmUnrecognized: boolean) {
+    setError(null);
+    try {
+      await api(`/api/projects/${id}/payment-configs`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "stripe",
+          scope: payForm.scope,
+          prNumber: payForm.scope === "pr" ? Number(payForm.prNumber) : undefined,
+          card: payForm.card,
+          expiry: payForm.expiry,
+          cvc: payForm.cvc,
+          consent: payForm.consent,
+          confirmUnrecognized,
+        }),
+      });
+      setPayWarning(null);
+      setPayForm({ ...payForm, card: "", cvc: "" });
+      refresh();
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes("requiresConfirmation") || msg.includes("known test card")) {
+        setPayWarning("this doesn't look like a known test card — if it's a real card, remove it now");
+      } else {
+        setError(msg);
+      }
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -345,6 +388,104 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           ))}
         </tbody>
       </table>
+
+      <h2>Payments</h2>
+      <p className="muted">
+        Configuring payments acknowledges that FlowGuard will execute checkout flows against your payment
+        provider&apos;s <strong>test mode</strong>. The live-mode guard is independent of this config and always
+        fails closed.
+      </p>
+      <table>
+        <tbody>
+          {paymentConfigs.map((p) => (
+            <tr key={p.id}>
+              <td>
+                <span className="pill">{p.provider}</span>{" "}
+                <span className="pill">{p.scope === "pr" ? `PR #${p.prNumber}` : "project default"}</span> card
+                …{p.cardLast4 ?? "????"} exp {p.expiry}
+                {!p.testCardRecognized ? <strong> ⚠ unrecognized card</strong> : null}
+              </td>
+              <td>
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    await api(`/api/payment-configs/${p.id}`, { method: "DELETE" });
+                    refresh();
+                  }}
+                >
+                  delete
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {payWarning ? (
+        <p className="error" data-testid="payment-warning">
+          ⚠ {payWarning} —{" "}
+          <button
+            data-testid="payment-confirm-unrecognized"
+            onClick={async () => {
+              await submitPayment(true);
+            }}
+          >
+            I confirm this is NOT a real card
+          </button>
+        </p>
+      ) : null}
+      <form
+        className="row"
+        data-testid="payment-form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          await submitPayment(false);
+        }}
+      >
+        <select value={payForm.scope} onChange={(e) => setPayForm({ ...payForm, scope: e.target.value })}>
+          <option value="project">project default</option>
+          <option value="pr">PR-scoped</option>
+        </select>
+        {payForm.scope === "pr" ? (
+          <input
+            placeholder="PR #"
+            style={{ width: 70 }}
+            value={payForm.prNumber}
+            onChange={(e) => setPayForm({ ...payForm, prNumber: e.target.value })}
+          />
+        ) : null}
+        <input
+          placeholder="test card number"
+          data-testid="pay-card"
+          value={payForm.card}
+          onChange={(e) => setPayForm({ ...payForm, card: e.target.value })}
+        />
+        <input
+          placeholder="MM / YY"
+          data-testid="pay-expiry"
+          style={{ width: 90 }}
+          value={payForm.expiry}
+          onChange={(e) => setPayForm({ ...payForm, expiry: e.target.value })}
+        />
+        <input
+          placeholder="CVC"
+          data-testid="pay-cvc"
+          style={{ width: 60 }}
+          value={payForm.cvc}
+          onChange={(e) => setPayForm({ ...payForm, cvc: e.target.value })}
+        />
+        <label style={{ whiteSpace: "nowrap" }}>
+          <input
+            type="checkbox"
+            data-testid="pay-consent"
+            checked={payForm.consent}
+            onChange={(e) => setPayForm({ ...payForm, consent: e.target.checked })}
+          />{" "}
+          I consent to test-mode checkout runs
+        </label>
+        <button type="submit" data-testid="pay-save">
+          Save
+        </button>
+      </form>
 
       <h2>Recordings & drafts</h2>
       <table>

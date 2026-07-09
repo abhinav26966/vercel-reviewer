@@ -22,6 +22,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL("/shop?error=payment", req.url), 303);
   }
 
+  // Env chaos: WEBHOOK_MODE=1 simulates apps that credit via provider webhooks —
+  // the redirect succeeds but state is NOT updated (webhooks don't reach previews).
+  if (process.env.WEBHOOK_MODE === "1") {
+    return NextResponse.redirect(new URL("/shop/success", req.url), 303);
+  }
+
   const res = NextResponse.redirect(new URL("/shop/success", req.url), 303);
   return withSession(res, { ...session, packs: session.packs + 1 });
 }

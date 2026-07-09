@@ -5,7 +5,7 @@ import type { InferenceProvider } from "@flowguard/inference";
 import { newId } from "@flowguard/shared";
 import type { Store } from "../store.js";
 import { assembleSpec, collectKnownTestIds } from "./assemble.js";
-import { detectLogin } from "./detect.js";
+import { detectLogin, detectPaymentContext } from "./detect.js";
 import { normalizeTrace } from "./normalize.js";
 import { runVisionPass } from "./vision-pass.js";
 
@@ -41,6 +41,8 @@ export async function compileRecording(
     const normalized = normalizeTrace(trace);
     // stage 5 (code-side detection first — login events never reach the model)
     const login = detectLogin(normalized.events);
+    const paymentEventIds = new Set(detectPaymentContext(normalized.events));
+    const hasPaymentConfig = Boolean(await store.resolvePaymentConfig(recording.projectId, null));
     const flowEvents = login ? normalized.events.slice(login.resumeIndex) : normalized.events;
     const interactionEvents = flowEvents.filter((e) => e.event.type !== "navigation");
 
@@ -73,6 +75,8 @@ export async function compileRecording(
       flowId,
       knownTestIds,
       dropped: normalized.dropped,
+      paymentEventIds,
+      hasPaymentConfig,
     });
     report.visionFailures = vision.failures;
 

@@ -15,6 +15,7 @@ import { ensureStorageState, LoginFailedError } from "./session.js";
 import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
 import { collectCoverage, startCoverage } from "./coverage.js";
 import { healStep } from "./heal.js";
+import { STRIPE_FRAME_ALLOWLIST } from "./payments/stripe.js";
 import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
@@ -43,8 +44,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   const workdir = await mkdtemp(path.join(tmpdir(), "flowguard-run-"));
   const harPath = path.join(workdir, "network.har");
   const tracePath = path.join(workdir, "trace.zip");
-  // secret-typing specs skip tracing: trace network capture can embed request bodies
-  const collectTrace = !specUsesSecrets(spec);
+  const specHasPayment = spec.steps.some((s) => s.action.type === "payment");
+  // secret-typing AND payment specs skip tracing: trace action/network capture
+  // can embed request bodies and card fills (doc 07 §4.3, §6)
+  const collectTrace = !specUsesSecrets(spec) && !specHasPayment;
 
   const consoleLines: Array<{ ts: number; text: string }> = [];
   const consoleErrors: Array<{ ts?: number; text: string }> = [];
@@ -167,7 +170,22 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       };
     }
 
-    const stepCtx = { page, baseUrl, tracker, logger, lookupSecret };
+    const stepCtx = {
+      page,
+      baseUrl,
+      tracker,
+      logger,
+      lookupSecret,
+      payment: job.configBundle.payment
+        ? {
+            provider: job.configBundle.payment.provider,
+            cardRef: job.configBundle.payment.cardRef,
+            expiry: job.configBundle.payment.expiry,
+            cvcRef: job.configBundle.payment.cvcRef,
+          }
+        : null,
+      ...(opts.secretResolver ? { resolveRef: (ref: string) => opts.secretResolver!.resolve(ref) } : {}),
+    };
     for (const step of outcome === "passed" ? spec.steps : []) {
       if (opts.shouldAbort && (await opts.shouldAbort())) {
         logger.info({ step: step.id }, "abort requested — stopping between steps");
@@ -183,11 +201,13 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         logger.warn({ step: step.id, reason: attempt.failure.message }, "step failed — deterministic retry");
         attempt = await runStepOnce(stepCtx, step);
       }
-      // bounded agentic heal (doc 04 §5) — never for env failures, never for
-      // secret steps (healStep fails closed), explore mode heals every step
+      // bounded agentic heal (doc 04 §5) — never for env/guard failures, never
+      // for secret or payment steps (fail closed), explore mode heals every step
       if (
         attempt.failure &&
         attempt.failure.failureClass !== "env" &&
+        attempt.failure.failureClass !== "payment_unverified_env" &&
+        step.action.type !== "payment" &&
         opts.inference &&
         (job.agentHeal || job.mode === "explore")
       ) {
@@ -408,17 +428,28 @@ async function captureFailureBundle(
 /**
  * Origin guard + Vercel bypass (doc 04 §2, doc 07 §4.5): bypass headers are
  * attached ONLY to same-host navigation requests; navigations off the deployment
- * host are refused (allowlisted provider frames arrive with payments in Phase 11).
+ * host are refused — EXCEPT allowlisted payment-provider hosts when the spec
+ * carries a payment step (doc 07 §6).
  */
 function installOriginGuardAndBypass(page: Page, job: ExecuteFlowJob, logger: Logger): void {
   const depHost = new URL(job.target.deploymentUrl).host;
+  const providerHosts = job.spec.steps.some((s) => s.action.type === "payment")
+    ? STRIPE_FRAME_ALLOWLIST
+    : [];
+  const allowed = (host: string) =>
+    host === depHost || providerHosts.some((h) => host === h || host.endsWith(`.${h}`));
   void page.route("**/*", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
     const isNav = req.isNavigationRequest() && req.frame() === page.mainFrame();
-    if (isNav && url.host !== depHost) {
+    if (isNav && !allowed(url.host)) {
       logger.warn({ url: url.host }, "blocked off-host navigation (origin guard)");
       await route.abort("blockedbyclient");
+      return;
+    }
+    if (isNav && url.host !== depHost) {
+      // provider host: pass through untouched (no bypass headers off-host)
+      await route.continue();
       return;
     }
     if (isNav && job.target.bypassSecret) {

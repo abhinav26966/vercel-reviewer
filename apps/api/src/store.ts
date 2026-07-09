@@ -5,6 +5,7 @@ import {
   baseResultCache,
   coverageMaps,
   credentialSets,
+  paymentConfigs,
   perfBaselines,
   deployments,
   flowSpecVersions,
@@ -196,6 +197,43 @@ export interface Store {
   listStuckRuns(cutoff: Date): Promise<RunRow[]>;
   /** Expired PR-scoped credential sets purge (doc 06 §6); returns count. */
   deleteExpiredPrCredentials(now: Date): Promise<number>;
+
+  // ── payments (Phase 11, doc 07 §6) ──────────────────────────────────────
+  createPaymentConfig(input: {
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    provider: string;
+    cardSecretId: string;
+    expiry: string;
+    cvcSecretId: string;
+    extras: Record<string, unknown>;
+    testCardRecognized: boolean;
+  }): Promise<string>;
+  listPaymentConfigs(projectId: string): Promise<
+    Array<{
+      id: string;
+      scope: string;
+      prNumber: number | null;
+      provider: string;
+      cardLast4: string | null;
+      expiry: string | null;
+      testCardRecognized: boolean;
+    }>
+  >;
+  deletePaymentConfig(id: string): Promise<boolean>;
+  /** Per-target resolution like credentials (doc 07 §3): head → PR scope then project; base → project. */
+  resolvePaymentConfig(
+    projectId: string,
+    prNumber: number | null,
+  ): Promise<{
+    provider: string;
+    cardSecretId: string;
+    expiry: string;
+    cvcSecretId: string;
+    scope: string;
+    extras: Record<string, unknown>;
+  } | null>;
   getCachedBaseResult(
     specVersionId: string,
     baseSha: string,
@@ -1031,6 +1069,82 @@ export class DrizzleStore implements Store {
     return expired.length;
   }
 
+  async createPaymentConfig(input: {
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    provider: string;
+    cardSecretId: string;
+    expiry: string;
+    cvcSecretId: string;
+    extras: Record<string, unknown>;
+    testCardRecognized: boolean;
+  }): Promise<string> {
+    const id = newId("paymentConfig");
+    // one config per (project, scope, prNumber, provider): replace on re-save
+    await this.db
+      .delete(paymentConfigs)
+      .where(
+        and(
+          eq(paymentConfigs.projectId, input.projectId),
+          eq(paymentConfigs.scope, input.scope),
+          input.prNumber === null ? isNull(paymentConfigs.prNumber) : eq(paymentConfigs.prNumber, input.prNumber),
+          eq(paymentConfigs.provider, input.provider),
+        ),
+      );
+    await this.db.insert(paymentConfigs).values({
+      id,
+      ...input,
+      consentConfirmedAt: new Date(), // the endpoint enforces consent === true
+    });
+    return id;
+  }
+
+  async listPaymentConfigs(projectId: string) {
+    const rows = await this.db
+      .select({
+        id: paymentConfigs.id,
+        scope: paymentConfigs.scope,
+        prNumber: paymentConfigs.prNumber,
+        provider: paymentConfigs.provider,
+        expiry: paymentConfigs.expiry,
+        testCardRecognized: paymentConfigs.testCardRecognized,
+        cardLast4: secrets.last4,
+      })
+      .from(paymentConfigs)
+      .leftJoin(secrets, eq(paymentConfigs.cardSecretId, secrets.id))
+      .where(eq(paymentConfigs.projectId, projectId));
+    return rows;
+  }
+
+  async deletePaymentConfig(id: string): Promise<boolean> {
+    const rows = await this.db.delete(paymentConfigs).where(eq(paymentConfigs.id, id)).returning({ id: paymentConfigs.id });
+    return rows.length > 0;
+  }
+
+  async resolvePaymentConfig(projectId: string, prNumber: number | null) {
+    if (prNumber !== null) {
+      const pr = await this.db
+        .select()
+        .from(paymentConfigs)
+        .where(
+          and(
+            eq(paymentConfigs.projectId, projectId),
+            eq(paymentConfigs.scope, "pr"),
+            eq(paymentConfigs.prNumber, prNumber),
+          ),
+        )
+        .limit(1);
+      if (pr[0]) return shapePaymentConfig(pr[0]);
+    }
+    const project = await this.db
+      .select()
+      .from(paymentConfigs)
+      .where(and(eq(paymentConfigs.projectId, projectId), eq(paymentConfigs.scope, "project")))
+      .limit(1);
+    return project[0] ? shapePaymentConfig(project[0]) : null;
+  }
+
   async createRecording(input: {
     projectId: string;
     flowName: string | null;
@@ -1592,4 +1706,23 @@ export class DrizzleStore implements Store {
       })),
     };
   }
+}
+
+function shapePaymentConfig(row: {
+  provider: string;
+  cardSecretId: string | null;
+  expiry: string | null;
+  cvcSecretId: string | null;
+  scope: string;
+  extras: Record<string, unknown>;
+}) {
+  if (!row.cardSecretId || !row.cvcSecretId || !row.expiry) return null;
+  return {
+    provider: row.provider,
+    cardSecretId: row.cardSecretId,
+    expiry: row.expiry,
+    cvcSecretId: row.cvcSecretId,
+    scope: row.scope,
+    extras: row.extras,
+  };
 }

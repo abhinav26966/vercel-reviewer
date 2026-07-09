@@ -642,6 +642,81 @@ export class FakeStore implements Store {
     return this.expiredCredentialCount;
   }
 
+  paymentConfigRows: Array<{
+    id: string;
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    provider: string;
+    cardSecretId: string;
+    expiry: string;
+    cvcSecretId: string;
+    extras: Record<string, unknown>;
+    testCardRecognized: boolean;
+  }> = [];
+
+  async createPaymentConfig(input: {
+    projectId: string;
+    scope: "project" | "pr";
+    prNumber: number | null;
+    provider: string;
+    cardSecretId: string;
+    expiry: string;
+    cvcSecretId: string;
+    extras: Record<string, unknown>;
+    testCardRecognized: boolean;
+  }): Promise<string> {
+    this.paymentConfigRows = this.paymentConfigRows.filter(
+      (r) =>
+        !(
+          r.projectId === input.projectId &&
+          r.scope === input.scope &&
+          r.prNumber === input.prNumber &&
+          r.provider === input.provider
+        ),
+    );
+    const id = this.id("pay");
+    this.paymentConfigRows.push({ id, ...input });
+    return id;
+  }
+
+  async listPaymentConfigs(projectId: string) {
+    return this.paymentConfigRows
+      .filter((r) => r.projectId === projectId)
+      .map((r) => ({
+        id: r.id,
+        scope: r.scope,
+        prNumber: r.prNumber,
+        provider: r.provider,
+        cardLast4: null,
+        expiry: r.expiry,
+        testCardRecognized: r.testCardRecognized,
+      }));
+  }
+
+  async deletePaymentConfig(id: string): Promise<boolean> {
+    const before = this.paymentConfigRows.length;
+    this.paymentConfigRows = this.paymentConfigRows.filter((r) => r.id !== id);
+    return this.paymentConfigRows.length < before;
+  }
+
+  async resolvePaymentConfig(projectId: string, prNumber: number | null) {
+    const pick =
+      (prNumber !== null
+        ? this.paymentConfigRows.find((r) => r.projectId === projectId && r.scope === "pr" && r.prNumber === prNumber)
+        : undefined) ?? this.paymentConfigRows.find((r) => r.projectId === projectId && r.scope === "project");
+    return pick
+      ? {
+          provider: pick.provider,
+          cardSecretId: pick.cardSecretId,
+          expiry: pick.expiry,
+          cvcSecretId: pick.cvcSecretId,
+          scope: pick.scope,
+          extras: pick.extras,
+        }
+      : null;
+  }
+
   async listHealPatches(projectId: string) {
     return this.runFlowResults
       .filter(

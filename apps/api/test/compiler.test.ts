@@ -267,3 +267,92 @@ describe("compileRecording (end-to-end with fake inference)", () => {
     expect(store.recordings[0]!.status).toBe("failed");
   });
 });
+
+// ── Phase 11: payment detection (doc 03 B5) ────────────────────────────────
+describe("payment detection → typed payment step", () => {
+  function stripeHopTrace(): RecordingTrace {
+    const base = buyRipTrace();
+    // splice a hosted-checkout hop between the buy click and the success page:
+    // nav to checkout.stripe.com, two clicks there, nav back to the app
+    const stripeUrl = "https://checkout.stripe.com/c/pay/cs_test_a1b2c3";
+    const mk = (id: string, ts: number, type: string, rest: Record<string, unknown> = {}) => ({
+      id,
+      ts,
+      type,
+      url: stripeUrl,
+      target: null,
+      value: null,
+      screenshotBefore: null,
+      screenshotAfter: null,
+      domSnapshotAfter: null,
+      network: [],
+      ...rest,
+    });
+    const events = [...(base.events as Array<Record<string, unknown>>)];
+    // replace e6/e7 (direct success navs) with the stripe hop then success
+    const buyIdx = events.findIndex((e) => e.id === "e5");
+    events.splice(
+      buyIdx + 1,
+      2,
+      mk("p1", 2500, "navigation"),
+      mk("p2", 3000, "click", {
+        target: {
+          tag: "button",
+          locators: [
+            { kind: "css", value: ".SubmitButton" },
+            { kind: "text", value: "Pay" },
+          ],
+          a11y: { role: "button", name: "Pay", path: [] },
+          boundingBox: { x: 0, y: 0, w: 10, h: 10 },
+          isCanvas: false,
+          canvasRelative: null,
+        },
+      }),
+      { ...mk("p3", 4200, "navigation"), url: "https://demo.vercel.app/shop/success" },
+    );
+    return { ...base, events: events as RecordingTrace["events"] };
+  }
+
+  function assembleWith(hasPaymentConfig: boolean) {
+    const trace = stripeHopTrace();
+    const normalized = normalizeTrace(trace);
+    const login = detectLogin(normalized.events);
+    const paymentEventIds = new Set(
+      normalized.events
+        .filter((e) => /checkout\.stripe\.com/.test(e.event.url))
+        .map((e) => e.event.id),
+    );
+    return assembleSpec({
+      trace,
+      events: normalized.events,
+      login,
+      suggestions: new Map<string, StepSuggestion>(),
+      flowMeta: null,
+      recordedFlowName: "Buy & Rip",
+      projectId: "prj_1",
+      flowId: "flw_1",
+      knownTestIds: new Set(["buy-pack-btn", "pack-canvas"]),
+      dropped: normalized.dropped,
+      paymentEventIds,
+      hasPaymentConfig,
+    });
+  }
+
+  it("the provider click-sequence becomes exactly ONE typed payment step", () => {
+    const { spec, report } = assembleWith(true);
+    const paymentSteps = spec.steps.filter((s) => s.action.type === "payment");
+    expect(paymentSteps).toHaveLength(1);
+    expect(paymentSteps[0]!.action).toMatchObject({ provider: "stripe", variant: "card", configRef: "project" });
+    // hallucination-guard bookkeeping: the typed step references the replaced event range
+    expect(report.stepSourceEvents[paymentSteps[0]!.id]!.length).toBeGreaterThan(0);
+    // no recorded stripe-internal click survives as its own step
+    expect(spec.steps.some((s) => "locators" in s.action && JSON.stringify(s.action).includes("SubmitButton"))).toBe(false);
+  });
+
+  it("no payment config → the payment step is flagged needsAttention (consent gate)", () => {
+    const { report } = assembleWith(false);
+    expect(report.needsAttention.some((n) => n.message.includes("payment config"))).toBe(true);
+    const { report: withConfig } = assembleWith(true);
+    expect(withConfig.needsAttention.some((n) => n.message.includes("payment config"))).toBe(false);
+  });
+});

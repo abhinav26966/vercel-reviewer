@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import { verifyWebhookSignature } from "@flowguard/github";
 import { isFlowGuardError } from "@flowguard/shared";
 import { createPendingVersion } from "./orchestrator/pending-version.js";
+import { isRecognizedTestCard, normalizeCardNumber, UNRECOGNIZED_CARD_WARNING } from "./payments.js";
 import { handleDevToolsImport, handleRecordingUpload, type RecordingDeps } from "./recordings/service.js";
 import type { DevToolsRecording } from "./recordings/devtools-import.js";
 import type { HandlerDeps } from "./handlers/deps.js";
@@ -245,6 +246,79 @@ export function buildApp(config: AppConfig) {
   app.get("/api/projects/:id/flows", async (req) => {
     const { id } = req.params as { id: string };
     return store().listFlows(id);
+  });
+
+  // ── payments (doc 07 §6): consent gate + soft validation + PR overrides ──
+  app.get("/api/projects/:id/payment-configs", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listPaymentConfigs(id);
+  });
+
+  app.post("/api/projects/:id/payment-configs", async (req, reply) => {
+    const { id: projectId } = req.params as { id: string };
+    let body: {
+      provider?: string;
+      scope?: string;
+      prNumber?: number;
+      card?: string;
+      expiry?: string;
+      cvc?: string;
+      extras?: Record<string, unknown>;
+      consent?: boolean;
+      confirmUnrecognized?: boolean;
+    };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    const provider = body.provider ?? "stripe";
+    if (provider !== "stripe") return reply.code(400).send({ error: "v1 supports Stripe only (doc 00 scope)" });
+    const scope = body.scope ?? "project";
+    if (scope !== "project" && scope !== "pr") return reply.code(400).send({ error: "scope must be project|pr" });
+    if (scope === "pr" && typeof body.prNumber !== "number") {
+      return reply.code(400).send({ error: "prNumber is required for pr-scoped payment configs" });
+    }
+    if (!body.card || !body.expiry || !body.cvc) {
+      return reply.code(400).send({ error: "card, expiry, cvc are required" });
+    }
+    if (!config.storeSecret) return reply.code(500).send({ error: "secret storage not configured" });
+    // the explicit consent gate (doc 07 §6) — payment steps stay disabled without it
+    if (body.consent !== true) {
+      return reply.code(400).send({
+        error:
+          "consent required: configuring payments acknowledges that FlowGuard will execute checkout flows against your payment provider's test mode",
+      });
+    }
+    // soft validation: unrecognized card → hard warning + double confirm
+    const recognized = isRecognizedTestCard(body.card, provider);
+    if (!recognized && body.confirmUnrecognized !== true) {
+      return reply.code(409).send({
+        warning: UNRECOGNIZED_CARD_WARNING,
+        requiresConfirmation: true,
+      });
+    }
+    const cardNumber = normalizeCardNumber(body.card);
+    const cardSecretId = await config.storeSecret(projectId, "card", cardNumber);
+    const cvcSecretId = await config.storeSecret(projectId, "cvc", body.cvc);
+    const id = await store().createPaymentConfig({
+      projectId,
+      scope,
+      prNumber: scope === "pr" ? body.prNumber! : null,
+      provider,
+      cardSecretId,
+      expiry: body.expiry,
+      cvcSecretId,
+      extras: body.extras ?? {},
+      testCardRecognized: recognized,
+    });
+    return reply.code(201).send({ ok: true, id, testCardRecognized: recognized });
+  });
+
+  app.delete("/api/payment-configs/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const deleted = await store().deletePaymentConfig(id);
+    return deleted ? { ok: true } : reply.code(404).send({ error: "payment config not found" });
   });
 
   // ── base-branch lifecycle (doc 05 §5): manual trigger + alerts ──

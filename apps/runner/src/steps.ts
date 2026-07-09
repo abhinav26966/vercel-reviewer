@@ -2,12 +2,13 @@ import type { Page } from "playwright";
 import type { Logger } from "pino";
 import { evalAssertion } from "./assertions.js";
 import type { NetworkTracker } from "./network-tracker.js";
+import { executePaymentStep, PaymentUnverifiedError } from "./payments/execute.js";
 import { LocatorMissError, resolveLocator } from "./pw-locators.js";
 import { findSecretPlaceholders } from "./secrets.js";
 import type { FlowStep, StepAssertionResult } from "./types.js";
 
 export interface StepFailure {
-  failureClass: "locator_miss" | "assertion" | "env";
+  failureClass: "locator_miss" | "assertion" | "env" | "payment_unverified_env";
   message: string;
   assertions: StepAssertionResult[];
 }
@@ -22,6 +23,10 @@ export interface StepContext {
   logger: Logger;
   /** Absent → specs with secret placeholders fail closed. */
   lookupSecret?: SecretLookup;
+  /** Direct `sec_*` reference resolution (payment card fields, doc 07 §6). */
+  resolveRef?: (ref: string) => Promise<string>;
+  /** Payment bundle from the config resolution (doc 07 §6); null = unconfigured. */
+  payment?: { provider: string; cardRef: string; expiry: string; cvcRef: string } | null;
 }
 
 export interface StepOutcome {
@@ -41,6 +46,14 @@ export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<Ste
     if (err instanceof LocatorMissError) {
       return {
         failure: { failureClass: "locator_miss", message: err.message, assertions: [] },
+        settleMs: 0,
+        settleTimedOut: false,
+      };
+    }
+    if (err instanceof PaymentUnverifiedError) {
+      // the live-mode guard fired (doc 07 §6): 🟣, never a flow failure
+      return {
+        failure: { failureClass: "payment_unverified_env", message: err.message, assertions: [] },
         settleMs: 0,
         settleTimedOut: false,
       };
@@ -141,6 +154,9 @@ async function act(ctx: StepContext, step: FlowStep): Promise<void> {
       await page.mouse.click(box.x + box.width * action.point.nx, box.y + box.height * action.point.ny);
       return;
     }
+    case "payment":
+      await executePaymentStep(ctx, action);
+      return;
     default:
       throw new Error(`action type "${action.type}" lands in a later phase`);
   }
