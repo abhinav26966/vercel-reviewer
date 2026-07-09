@@ -2,7 +2,61 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 7 — Perf gates + hang/blank/dead classification — ✅ AC PASSED (2026-07-09)**; next up: Phase 8 — Diff-aware selection + coverage maps
+## Current phase: **Phase 8 — Diff-aware selection + coverage maps — code complete, live AC ~half done (2026-07-09); BLOCKED on founder merging PR #6**
+
+### Phase 8 state
+
+Implementation complete + all gates green (build, 111 api/runner tests of ~200
+total, lint, typecheck). Committed locally on main (`92c9955`, `2a6d2f9`).
+
+Built: runner coverage collection (Playwright JS coverage → executed
+first-party chunks → source-map fetch via page.request (carries bypass
+cookie) → chunk-level source attribution; network-derived `/api/*` URL paths;
+rides on `RunFlowResult.coverage`), `select.ts` (fan-out globs incl. >40%
+covered-files rule + truncated-diff rule → smoke tier → cold start →
+intersection: coverage files / changed `app/api/**/route.*` mapped to URL
+paths / route-directory heuristic from spec startPath+navigates), orchestrator
+wiring (selection per push from compare diff; ⚪ skipped rows with reasons in
+the comment + selection list in details; plan records reasons; coverage_maps
+written from fresh passing base m1 results with rootDir-prefixed repo paths;
+base cache bypassed once per flow until a coverage row exists — "seeding"),
+flows list + smoke toggle in dashboard (GET /projects/:id/flows,
+PATCH /flows/:id/tier), `productionBrowserSourceMaps` in demo-app,
+`rootDir` project setting (set to `examples/demo-app` in local DB).
+Docs 02/04/06/08 updated same commit.
+
+**Live evidence so far (PR #6 — the platform PR itself):**
+- Fan-out fired: comment shows `flows selected 2/2 (diff-aware) — fan-out:
+  shared config changed: apps/runner/package.json` + per-flow reasons ✓
+- coverage_maps seeded: apiRoutes captured (`/api/login`, `/api/packs/buy`,
+  `/api/packs/open`); `files` empty because the CURRENT production deployment
+  (aae365e) predates the source-maps config — expected.
+
+**Remaining live AC (needs PR #6 merged → production deploys with maps):**
+1. Founder merges https://github.com/abhinav26966/vercel-reviewer/pull/6
+   (classifier blocks both direct main-push and self-merge).
+2. Wait for production deployment of new main; DELETE the stale (files=0)
+   coverage_maps rows (equivalent of the Phase 10 base-run refresh, which
+   doesn't exist yet) so seeding re-runs against the maps-enabled deployment.
+3. AC PR with sequential pushes: (a) touch examples/demo-app/README.md → push
+   1 seeds real coverage (cold start), push 2 → smoke-only with Buy&Rip ⚪;
+   (b) comment tweak in src/components/PackScene.tsx → selects rip flow via
+   coverage files; (c) examples/demo-app/package.json tweak → fan-out runs
+   everything. Reasons in details block each push. (Root README.md doesn't
+   build on Vercel — root dir is examples/demo-app — hence the in-app README.)
+
+### Phase 8 lessons
+
+- Editing apps/api mid-run restarts tsx watch and ORPHANS in-flight
+  orchestrations (run stuck `executing`; runner jobs finish into the void).
+  Recovery: `scripts/soak.ts <runId> 1` re-orchestrates. Don't edit api code
+  while a live run is orchestrating.
+- The api parses JSON bodies as RAW STRINGS (webhook signatures) — every JSON
+  route must JSON.parse(req.body) itself; CORS allow-methods needed PATCH.
+- gh CLI is authed as the founder (repo scope) — branch pushes + PR creation
+  work; merges are classifier-blocked as self-approval.
+
+## Previous phase: **Phase 7 — Perf gates + hang/blank/dead classification — ✅ AC PASSED (2026-07-09)**
 
 ### Phase 7 AC evidence (live, PR #5 `test/phase7-spectrum`, one PR / sequential chaos pushes)
 
