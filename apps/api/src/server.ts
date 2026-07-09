@@ -44,6 +44,14 @@ const s3 = new S3Client({
   credentials: { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY },
 });
 
+const inference = createInferenceFromEnv({
+  logSink: (e) =>
+    logger.info(
+      { capability: e.capability, model: e.usage.model, tokens: e.usage.completionTokens },
+      "inference call",
+    ),
+});
+
 const orchestratorDeps: OrchestratorDeps = {
   store,
   githubApp,
@@ -56,15 +64,8 @@ const orchestratorDeps: OrchestratorDeps = {
   setAbortKey: queues.setAbortKey,
   artifactLink: artifactLinkBuilder(env.PUBLIC_API_URL, masterKey),
   dashboardUrl: env.PUBLIC_DASHBOARD_URL,
+  inference,
 };
-
-const inference = createInferenceFromEnv({
-  logSink: (e) =>
-    logger.info(
-      { capability: e.capability, model: e.usage.model, tokens: e.usage.completionTokens },
-      "inference call",
-    ),
-});
 
 const getRecordingObject = async (key: string): Promise<Buffer> => {
   const res = await s3.send(new GetObjectCommand({ Bucket: env.S3_RECORDINGS_BUCKET, Key: key }));

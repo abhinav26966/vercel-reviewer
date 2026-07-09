@@ -4,6 +4,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 import type { Logger } from "pino";
+import type { InferenceProvider } from "@flowguard/inference";
 import { RunFlowResultSchema } from "@flowguard/schemas";
 import { globalRedaction } from "@flowguard/shared";
 import { artifactKey, type ArtifactStore } from "./artifacts.js";
@@ -13,6 +14,7 @@ import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
 import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
 import { collectCoverage, startCoverage } from "./coverage.js";
+import { healStep } from "./heal.js";
 import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
@@ -26,6 +28,8 @@ export interface ExecuteFlowOptions {
   shouldAbort?: () => Promise<boolean>;
   headless?: boolean;
   databaseUrl?: string;
+  /** Heal/explore agent backend (doc 04 §5); absent ⇒ heal silently skipped. */
+  inference?: InferenceProvider;
 }
 
 /**
@@ -65,6 +69,11 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   let blankScore = 0;
   let failureClassOverride: string | null = null;
   let coverage: RunFlowResult["coverage"] = null;
+  let healAttempted = false;
+  let healsSucceeded = 0;
+  let healsFailed = 0;
+  const healPatches: Array<{ stepId: string; locators: unknown[] }> = [];
+  const healTranscript: string[] = [];
   const flowStart = Date.now();
   const tracker = new NetworkTracker();
 
@@ -173,6 +182,25 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         // one deterministic retry: page may have been mid-hydration (doc 04 §3)
         logger.warn({ step: step.id, reason: attempt.failure.message }, "step failed — deterministic retry");
         attempt = await runStepOnce(stepCtx, step);
+      }
+      // bounded agentic heal (doc 04 §5) — never for env failures, never for
+      // secret steps (healStep fails closed), explore mode heals every step
+      if (
+        attempt.failure &&
+        attempt.failure.failureClass !== "env" &&
+        opts.inference &&
+        (job.agentHeal || job.mode === "explore")
+      ) {
+        healAttempted = true;
+        const heal = await healStep(stepCtx, step, opts.inference, logger);
+        healTranscript.push(...heal.transcript.map((t) => `[${step.id}] ${t}`));
+        if (heal.succeeded) {
+          healsSucceeded++;
+          if (heal.proposedPatch) healPatches.push(heal.proposedPatch);
+          attempt = { failure: null, settleMs: attempt.settleMs, settleTimedOut: false };
+        } else {
+          healsFailed++;
+        }
       }
       const stepEnd = Date.now();
       const stepNetwork = tracker.window(stepStart, stepEnd);
@@ -304,6 +332,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           status === "error" && fail?.message.startsWith("login failed")
             ? "login_failed"
             : (failureClassOverride ?? fail?.failureClass ?? null),
+        healAttempt: {
+          attempted: healAttempted,
+          succeeded: healsSucceeded > 0 && healsFailed === 0,
+          proposedPatch:
+            healPatches.length === 0 ? null : healPatches.length === 1 ? healPatches[0] : healPatches,
+        },
         steps,
         perf: { flowTotalMs: Date.now() - flowStart, regressions: [] },
         artifacts: artifactKeys,
@@ -314,6 +348,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           nextErrorOverlay,
           blankScreenScore: blankScore,
           failureDetail,
+          healTranscript,
         },
         coverage,
       }),

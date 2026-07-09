@@ -183,7 +183,17 @@ export class FakeStore implements Store {
     fromCache: boolean;
   }> = [];
   baseCache = new Map<string, string>(); // `${specVersionId}:${sha}` → resultId
-  verdicts: Array<{ runId: string; flowId: string; verdict: VerdictKind; humanCopy: string }> = [];
+  verdicts: Array<{
+    id?: string;
+    runId: string;
+    flowId: string;
+    verdict: VerdictKind;
+    humanCopy: string;
+    confidence?: number | null;
+    rationale?: string | null;
+    approvalState?: string | null;
+    pendingVersionId?: string | null;
+  }> = [];
   runPatches: Array<{ runId: string; patch: Record<string, unknown> }> = [];
   mergeBaseShas = new Map<string, string | null>(); // runId → mergeBaseSha
 
@@ -382,6 +392,7 @@ export class FakeStore implements Store {
     sourceRecordingId?: string | null;
     supersedesVersionId?: string | null;
     compilationReport?: Record<string, unknown> | null;
+    approvedFromRunId?: string | null;
   }): Promise<string> {
     const id = this.id("fsv");
     this.versionRows.push({
@@ -392,7 +403,11 @@ export class FakeStore implements Store {
       branch: input.branch,
       source: input.source,
       sourceRecordingId: input.sourceRecordingId ?? null,
-      compilationReport: input.compilationReport ?? null,
+      compilationReport: {
+        ...(input.compilationReport ?? {}),
+        ...(input.approvedFromRunId ? { approvedFromRunId: input.approvedFromRunId } : {}),
+        ...(input.supersedesVersionId ? { supersedesVersionId: input.supersedesVersionId } : {}),
+      },
     });
     return id;
   }
@@ -445,8 +460,94 @@ export class FakeStore implements Store {
     verdict: VerdictKind;
     humanCopy: string;
     evidence: Record<string, unknown>;
-  }): Promise<void> {
-    this.verdicts.push(input);
+    confidence?: number | null;
+    rationale?: string | null;
+    approvalState?: string | null;
+  }): Promise<string> {
+    const id = this.id("vrd");
+    this.verdicts.push({ ...input, id });
+    return id;
+  }
+
+  async getVerdictById(verdictId: string) {
+    const v = this.verdicts.find((x) => x.id === verdictId);
+    return v
+      ? {
+          id: v.id!,
+          runId: v.runId,
+          flowId: v.flowId,
+          verdict: v.verdict as string,
+          humanCopy: v.humanCopy,
+          rationale: v.rationale ?? null,
+          approvalState: v.approvalState ?? null,
+          pendingVersionId: v.pendingVersionId ?? null,
+        }
+      : null;
+  }
+
+  async setVerdictApproval(
+    verdictId: string,
+    patch: { approvalState: string; pendingVersionId?: string | null; verdict?: VerdictKind },
+  ): Promise<void> {
+    const v = this.verdicts.find((x) => x.id === verdictId);
+    if (!v) return;
+    v.approvalState = patch.approvalState;
+    if (patch.pendingVersionId !== undefined) v.pendingVersionId = patch.pendingVersionId;
+    if (patch.verdict) v.verdict = patch.verdict;
+  }
+
+  async listAwaitingVerdicts(projectId: string) {
+    return this.verdicts
+      .filter(
+        (v) =>
+          v.approvalState === "awaiting" &&
+          (this.officialFlows.some((f) => f.flowId === v.flowId && f.projectId === projectId) ||
+            this.flowRows.some((f) => f.id === v.flowId && f.projectId === projectId)),
+      )
+      .map((v) => ({
+        id: v.id!,
+        runId: v.runId,
+        flowId: v.flowId,
+        flowName:
+          this.officialFlows.find((f) => f.flowId === v.flowId)?.flowName ??
+          this.flowRows.find((f) => f.id === v.flowId)?.name ??
+          "?",
+        humanCopy: v.humanCopy,
+        rationale: v.rationale ?? null,
+      }));
+  }
+
+  async getOfficialVersion(flowId: string, branch: string) {
+    const v = this.versionRows.find(
+      (x) => x.flowId === flowId && x.branch === branch && ["official", "quarantined"].includes(x.status),
+    );
+    if (v) return { id: v.id, spec: v.spec };
+    const f = this.officialFlows.find((x) => x.flowId === flowId && x.branch === branch);
+    return f ? { id: f.specVersionId, spec: f.spec } : null;
+  }
+
+  async getRunFlowResult(runId: string, flowId: string, target: "head" | "base") {
+    const r = this.runFlowResults.find((x) => x.runId === runId && x.flowId === flowId && x.target === target);
+    return r ? { id: r.id, result: r.result } : null;
+  }
+
+  async listHealPatches(projectId: string) {
+    return this.runFlowResults
+      .filter(
+        (r) =>
+          r.target === "head" &&
+          r.result.healAttempt.succeeded &&
+          r.result.healAttempt.proposedPatch &&
+          this.officialFlows.some((f) => f.flowId === r.flowId && f.projectId === projectId),
+      )
+      .slice(0, 10)
+      .map((r) => ({
+        resultId: r.id,
+        runId: r.runId,
+        flowId: r.flowId,
+        flowName: this.officialFlows.find((f) => f.flowId === r.flowId)?.flowName ?? "?",
+        patch: r.result.healAttempt.proposedPatch,
+      }));
   }
 
   async listActiveRunsForPr(prId: string, beforeRunId: string): Promise<RunRow[]> {
@@ -607,6 +708,23 @@ export function fakeOctokit(
   let nextCommentId = 100;
   const octokit = {
     rest: {
+      pulls: {
+        async get({ pull_number }: { pull_number: number }) {
+          return {
+            data: {
+              number: pull_number,
+              title: `PR ${pull_number}`,
+              body: "PR body",
+              state: "open",
+              head: { ref: "feat", sha: "headsha" },
+              base: { ref: "main" },
+            },
+          };
+        },
+        async listCommits() {
+          return { data: [{ commit: { message: "a commit message" } }] };
+        },
+      },
       issues: {
         async listComments() {
           return { data: comments.map((c) => ({ ...c })) };

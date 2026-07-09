@@ -41,10 +41,29 @@ interface FlowRow {
   archived: boolean;
 }
 
+interface AwaitingVerdict {
+  id: string;
+  runId: string;
+  flowId: string;
+  flowName: string;
+  humanCopy: string;
+  rationale: string | null;
+}
+
+interface HealPatch {
+  resultId: string;
+  runId: string;
+  flowId: string;
+  flowName: string;
+  patch: unknown;
+}
+
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [creds, setCreds] = useState<CredentialSet[]>([]);
   const [flows, setFlows] = useState<FlowRow[]>([]);
+  const [awaiting, setAwaiting] = useState<AwaitingVerdict[]>([]);
+  const [healPatches, setHealPatches] = useState<HealPatch[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
@@ -60,6 +79,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const refresh = useCallback(() => {
     api<CredentialSet[]>(`/api/projects/${id}/credentials`).then(setCreds).catch((e) => setError(String(e)));
     api<FlowRow[]>(`/api/projects/${id}/flows`).then(setFlows).catch(() => {});
+    api<AwaitingVerdict[]>(`/api/projects/${id}/verdicts`).then(setAwaiting).catch(() => {});
+    api<HealPatch[]>(`/api/projects/${id}/heal-patches`).then(setHealPatches).catch(() => {});
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
     api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
     api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
@@ -170,6 +191,82 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           Save
         </button>
       </form>
+
+      {awaiting.length > 0 ? (
+        <>
+          <h2>🔵 Changed as intended — awaiting your decision</h2>
+          <table>
+            <tbody>
+              {awaiting.map((v) => (
+                <tr key={v.id}>
+                  <td>
+                    <strong>{v.flowName}</strong>
+                    <br />
+                    {v.humanCopy}
+                    {v.rationale ? <p className="muted">{v.rationale}</p> : null}
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button
+                      data-testid={`approve-${v.id}`}
+                      onClick={async () => {
+                        await api(`/api/verdicts/${v.id}/approve`, { method: "POST", body: "{}" });
+                        refresh();
+                      }}
+                    >
+                      ✔ Approve new behavior
+                    </button>{" "}
+                    <button
+                      className="danger"
+                      data-testid={`reject-${v.id}`}
+                      onClick={async () => {
+                        await api(`/api/verdicts/${v.id}/reject`, { method: "POST", body: "{}" });
+                        refresh();
+                      }}
+                    >
+                      ✖ Reject (→ 🔴)
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
+
+      {healPatches.length > 0 ? (
+        <>
+          <h2>Spec drift detected</h2>
+          <table>
+            <tbody>
+              {healPatches.map((p) => (
+                <tr key={p.resultId}>
+                  <td>
+                    <strong>{p.flowName}</strong> — a step succeeded via adaptive retry; accept the updated
+                    locator?
+                    <p className="muted" style={{ fontFamily: "monospace", fontSize: 12 }}>
+                      {JSON.stringify(p.patch).slice(0, 160)}
+                    </p>
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button
+                      data-testid={`accept-patch-${p.resultId}`}
+                      onClick={async () => {
+                        await api(`/api/heal-patches/accept`, {
+                          method: "POST",
+                          body: JSON.stringify({ runId: p.runId, flowId: p.flowId }),
+                        });
+                        refresh();
+                      }}
+                    >
+                      Accept updated locator
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
 
       <h2>Flows</h2>
       <table>

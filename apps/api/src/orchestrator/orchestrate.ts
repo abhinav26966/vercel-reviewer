@@ -21,8 +21,9 @@ import type { Store } from "../store.js";
 import { splitRepo } from "../handlers/deps.js";
 import { compareFlow, type ArtifactLinker } from "./comparator.js";
 import { buildConfigBundle, MissingCredentialsError } from "./config-bundle.js";
+import { applyJudgeRules, judgeDivergence, type JudgeProvider } from "./judge.js";
 import { MEASURE_SAMPLES, mergeMeasuredResults } from "./measure.js";
-import { selectFlows, type SelectableFlow } from "./select.js";
+import { diffCorrelation, selectFlows, type SelectableFlow } from "./select.js";
 
 /**
  * The run state machine (doc 06 §3), Phase 3 scope:
@@ -64,6 +65,8 @@ export interface OrchestratorDeps {
   /** For 🟣 login_failed rows: where to enter PR-scoped credentials (doc 07 §3). */
   dashboardUrl?: string;
   flowJobTimeoutMs?: number;
+  /** Intent-aware judge (doc 05 §3); absent ⇒ 🔴 candidates stay 🔴. */
+  inference?: JudgeProvider;
 }
 
 export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Promise<void> {
@@ -226,6 +229,8 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       cachedBase: RunFlowResult | null;
       /** synthesized without execution (e.g. missing credentials) */
       syntheticHead: RunFlowResult | null;
+      /** judge rule 4 input (doc 05 §3.4), resolved with the head bundle */
+      dataBranchDiffers: boolean;
     }
 
     const enqueueTarget = async (
@@ -234,7 +239,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       deploymentUrl: string,
       sha: string,
       deploymentId: string,
-    ): Promise<{ jobIds: string[]; synthetic: RunFlowResult | null }> => {
+    ): Promise<{ jobIds: string[]; synthetic: RunFlowResult | null; dataBranchDiffers: boolean }> => {
       try {
         const configBundle = await buildConfigBundle(
           {
@@ -255,16 +260,18 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           await deps.enqueueFlowJob(
             buildJob(runId, f, target, deploymentUrl, sha, bypassSecret, deploymentId, configBundle, "measure", {
               coverage: target === "base" && sample === 1,
+              // heal on head only: base failures must surface (quarantine signal)
+              agentHeal: target === "head" && settings.agentHealEnabled,
             }),
             jobId,
           );
           jobIds.push(jobId);
         }
-        return { jobIds, synthetic: null };
+        return { jobIds, synthetic: null, dataBranchDiffers: configBundle.dataBranchDiffers };
       } catch (err) {
         if (err instanceof MissingCredentialsError) {
           logger.warn({ flow: f.flowId, persona: err.persona, target }, "no credentials — flow not executed");
-          return { jobIds: [], synthetic: syntheticLoginFailure(runId, f, target, err.message) };
+          return { jobIds: [], synthetic: syntheticLoginFailure(runId, f, target, err.message), dataBranchDiffers: false };
         }
         throw err;
       }
@@ -321,6 +328,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         baseJobIds,
         cachedBase,
         syntheticHead: headRes.synthetic,
+        dataBranchDiffers: headRes.dataBranchDiffers,
       });
     }
 
@@ -398,9 +406,26 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       }
     }
 
-    // ── judging (stubbed): deterministic comparator → reporting ──
+    // ── judging: deterministic comparator, then the intent judge on 🔴 candidates ──
     await store.updateRun(runId, { state: "reporting" });
     await store.deleteVerdictsForRun(runId); // reruns replace their verdicts
+
+    // PR prose + commits fetched lazily, once, only if something diverged
+    let prose: { title: string; body: string; commits: string[] } | null = null;
+    const fetchProse = async () => {
+      if (prose) return prose;
+      const [{ data: prData }, { data: commits }] = await Promise.all([
+        octokit.rest.pulls.get({ owner, repo, pull_number: pr.number }),
+        octokit.rest.pulls.listCommits({ owner, repo, pull_number: pr.number, per_page: 20 }),
+      ]);
+      prose = {
+        title: prData.title ?? "",
+        body: prData.body ?? "",
+        commits: commits.map((c) => c.commit.message),
+      };
+      return prose;
+    };
+
     const rows: FlowReviewRow[] = [];
     const kinds: VerdictKind[] = [];
     for (const o of outcomes) {
@@ -414,19 +439,69 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           ? `${deps.dashboardUrl}/projects/${project.id}?pr=${pr.number}`
           : undefined,
       });
-      kinds.push(cmp2.verdict);
-      rows.push({
-        flowName: o.plan.flowName,
-        emoji: VERDICT_EMOJI[cmp2.verdict],
-        label: VERDICT_LABEL[cmp2.verdict],
-        detail: cmp2.detail,
-      });
-      await store.insertVerdict({
+
+      let verdict: VerdictKind = cmp2.verdict;
+      let detail = cmp2.detail;
+      let confidence: number | null = null;
+      let rationale: string | null = null;
+      if (cmp2.verdict === "broken" && deps.inference) {
+        const correlation = diffCorrelation({
+          coverage: coverageByFlow.get(o.plan.flowId) ?? null,
+          spec: o.plan.spec,
+          changedFiles,
+          rootDir: settings.rootDir,
+        });
+        const p = await fetchProse();
+        const judged = applyJudgeRules(
+          await judgeDivergence(
+            deps.inference,
+            {
+              flowName: o.plan.flowName,
+              spec: o.plan.spec,
+              head: o.head,
+              failureDetail: cmp2.detail,
+              prTitle: p.title,
+              prBody: p.body,
+              commitMessages: p.commits,
+              changedFiles: (cmp.files ?? []).map((f) => ({
+                filename: f.filename,
+                additions: f.additions,
+                deletions: f.deletions,
+                ...(f.patch ? { patch: f.patch } : {}),
+              })),
+              diffCorrelation: correlation,
+              dataBranchDiffers: o.plan.dataBranchDiffers,
+            },
+            logger,
+          ),
+          { diffCorrelation: correlation, failureDetail: cmp2.detail },
+        );
+        verdict = judged.verdict;
+        detail = judged.detail;
+        confidence = judged.confidence;
+        rationale = judged.rationale;
+        logger.info({ flow: o.plan.flowId, verdict, confidence }, "judge decided");
+      }
+
+      const verdictId = await store.insertVerdict({
         runId,
         flowId: o.plan.flowId,
-        verdict: cmp2.verdict,
-        humanCopy: cmp2.detail,
+        verdict,
+        humanCopy: detail,
+        confidence,
+        rationale,
+        approvalState: verdict === "changed_as_intended" ? "awaiting" : null,
         evidence: { head: o.head.artifacts, base: o.base?.artifacts ?? null },
+      });
+      if (verdict === "changed_as_intended" && deps.dashboardUrl) {
+        detail += ` — [review & approve](${deps.dashboardUrl}/projects/${project.id}?verdict=${verdictId})`;
+      }
+      kinds.push(verdict);
+      rows.push({
+        flowName: o.plan.flowName,
+        emoji: VERDICT_EMOJI[verdict],
+        label: VERDICT_LABEL[verdict],
+        detail,
       });
     }
 
@@ -450,10 +525,14 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     );
 
     const blocking = kinds.filter((k) => BLOCKING_VERDICTS.includes(k));
+    const awaiting = kinds.filter((k) => k === "changed_as_intended").length;
     const envIssues = kinds.filter((k) => k === "env_issue").length;
     if (blocking.length > 0) {
       const names = rows.filter((r) => r.emoji === "🔴" || r.emoji === "🟠").map((r) => r.flowName);
       await status("failure", `${blocking.length} flow${blocking.length > 1 ? "s" : ""} broken: ${names.join(", ")}`);
+    } else if (awaiting > 0) {
+      // doc 05 §1: only 🔵 pending → neutral/action_required
+      await status("pending", `${awaiting} flow${awaiting > 1 ? "s" : ""} changed as intended — approve or reject in the dashboard`);
     } else if (envIssues > 0) {
       await status("success", `flows green (${envIssues} env issue${envIssues > 1 ? "s" : ""} — see comment)`);
     } else {
@@ -498,7 +577,7 @@ function buildJob(
   deploymentId: string,
   configBundle: ExecuteFlowJob["configBundle"],
   mode: "measure" | "warmup" = "measure",
-  collect: { coverage?: boolean } = {},
+  collect: { coverage?: boolean; agentHeal?: boolean } = {},
 ): ExecuteFlowJob {
   return ExecuteFlowJobSchema.parse({
     runId,
@@ -515,6 +594,7 @@ function buildJob(
     configBundle,
     mode,
     collect: { coverage: collect.coverage ?? false, har: true, video: mode !== "warmup" },
+    agentHeal: collect.agentHeal ?? false,
     abortToken: runId,
   });
 }
@@ -545,6 +625,7 @@ function syntheticLoginFailure(
       nextErrorOverlay: false,
       blankScreenScore: 0,
       failureDetail: null,
+      healTranscript: [],
     },
     coverage: null,
   };

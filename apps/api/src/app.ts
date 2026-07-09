@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import type { Logger } from "pino";
 import { verifyWebhookSignature } from "@flowguard/github";
 import { isFlowGuardError } from "@flowguard/shared";
+import { createPendingVersion } from "./orchestrator/pending-version.js";
 import { handleDevToolsImport, handleRecordingUpload, type RecordingDeps } from "./recordings/service.js";
 import type { DevToolsRecording } from "./recordings/devtools-import.js";
 import type { HandlerDeps } from "./handlers/deps.js";
@@ -242,6 +243,74 @@ export function buildApp(config: AppConfig) {
   app.get("/api/projects/:id/flows", async (req) => {
     const { id } = req.params as { id: string };
     return store().listFlows(id);
+  });
+
+  // ── the 🔵 loop (doc 05 §3.6): approve → pending version; reject → 🔴 ──
+  app.get("/api/projects/:id/verdicts", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listAwaitingVerdicts(id);
+  });
+
+  app.post("/api/verdicts/:id/approve", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const verdict = await store().getVerdictById(id);
+    if (!verdict) return reply.code(404).send({ error: "verdict not found" });
+    if (verdict.approvalState !== "awaiting") {
+      return reply.code(409).send({ error: `verdict is ${verdict.approvalState ?? "not approvable"}` });
+    }
+    const run = await store().getRunById(verdict.runId);
+    const pr = run?.prId ? await store().getPullRequestById(run.prId) : null;
+    const branch = pr?.baseBranch ?? "main";
+    const pendingVersionId = await createPendingVersion({
+      store: store(),
+      flowId: verdict.flowId,
+      runId: verdict.runId,
+      branch,
+      note: `approved 🔵: ${verdict.humanCopy}`,
+    });
+    if (!pendingVersionId) return reply.code(409).send({ error: "no official version to supersede" });
+    await store().setVerdictApproval(id, { approvalState: "approved", pendingVersionId });
+    return { ok: true, pendingVersionId };
+  });
+
+  app.post("/api/verdicts/:id/reject", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const verdict = await store().getVerdictById(id);
+    if (!verdict) return reply.code(404).send({ error: "verdict not found" });
+    if (verdict.approvalState !== "awaiting") {
+      return reply.code(409).send({ error: `verdict is ${verdict.approvalState ?? "not approvable"}` });
+    }
+    // doc 05 §3.6: reject converts the 🔵 to 🔴
+    await store().setVerdictApproval(id, { approvalState: "rejected", verdict: "broken" });
+    return { ok: true };
+  });
+
+  // spec drift from successful heals (doc 04 §5): accept → pending version
+  app.get("/api/projects/:id/heal-patches", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listHealPatches(id);
+  });
+
+  app.post("/api/heal-patches/accept", async (req, reply) => {
+    let body: { runId?: string; flowId?: string };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (!body.runId || !body.flowId) return reply.code(400).send({ error: "runId and flowId required" });
+    const run = await store().getRunById(body.runId);
+    if (!run) return reply.code(404).send({ error: "run not found" });
+    const pr = run.prId ? await store().getPullRequestById(run.prId) : null;
+    const pendingVersionId = await createPendingVersion({
+      store: store(),
+      flowId: body.flowId,
+      runId: body.runId,
+      branch: pr?.baseBranch ?? "main",
+      note: "accepted spec-drift locator patch from adaptive retry",
+    });
+    if (!pendingVersionId) return reply.code(409).send({ error: "no official version to supersede" });
+    return { ok: true, pendingVersionId };
   });
 
   // smoke-tier toggle (doc 06 §4.2) — smoke flows run on every push regardless of diff

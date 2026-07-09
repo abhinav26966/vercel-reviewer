@@ -5,6 +5,7 @@
  */
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { createInferenceFromEnv } from "@flowguard/inference";
 import { ExecuteFlowJobSchema } from "@flowguard/schemas";
 import { createLogger } from "@flowguard/shared";
 import { S3ArtifactStore } from "./artifacts.js";
@@ -26,6 +27,8 @@ const abortClient = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
 export const RUNS_QUEUE = "runs";
 
 const secretResolver = process.env.FLOWGUARD_MASTER_KEY ? new VaultSecretResolver() : undefined;
+/** heal/explore agent backend (doc 04 §5) — heal is skipped without a key */
+const inference = process.env.INFERENCE_API_KEY ? createInferenceFromEnv() : undefined;
 
 const worker = new Worker(
   RUNS_QUEUE,
@@ -37,6 +40,7 @@ const worker = new Worker(
       logger,
       artifacts: new S3ArtifactStore(env),
       ...(secretResolver ? { secretResolver } : {}),
+      ...(inference ? { inference } : {}),
       shouldAbort: async () => (await abortClient.exists(`flowguard:abort:${job.runId}`)) === 1,
     });
     logger.info({ runId: job.runId, status: result.status }, "job finished");

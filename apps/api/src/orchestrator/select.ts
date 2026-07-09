@@ -110,19 +110,34 @@ function fanoutReason(params: {
 function flowReason(f: SelectableFlow, changedFiles: string[], rootDir: string): string | null {
   if (f.tier === "smoke") return "smoke tier — always runs";
   if (!f.coverage) return "no coverage collected yet (cold start)";
+  return diffCorrelation({ coverage: f.coverage, spec: f.spec, changedFiles, rootDir });
+}
 
-  const fileHits = f.coverage.files.filter((cf) => changedFiles.includes(cf));
+/**
+ * Does the diff touch code this flow exercises? Shared by selection (§4.3)
+ * and the judge's hard code mirror (doc 05 §3.3: diff correlation outranks
+ * prose — no correlation ⇒ never 🔵, whatever the model says).
+ */
+export function diffCorrelation(params: {
+  coverage: { files: string[]; apiRoutes: string[] } | null;
+  spec: FlowSpec;
+  changedFiles: string[];
+  rootDir: string;
+}): string | null {
+  const { coverage, spec, changedFiles, rootDir } = params;
+
+  const fileHits = (coverage?.files ?? []).filter((cf) => changedFiles.includes(cf));
   if (fileHits.length > 0) {
     const more = fileHits.length > 1 ? ` (+${fileHits.length - 1} more)` : "";
     return `touches ${fileHits[0]}${more}`;
   }
 
   const changedRoutes = new Set(changedFiles.map((cf) => apiRouteOfFile(stripRoot(cf, rootDir))).filter(Boolean));
-  const routeHit = f.coverage.apiRoutes.find((r) => changedRoutes.has(r));
+  const routeHit = (coverage?.apiRoutes ?? []).find((r) => changedRoutes.has(r));
   if (routeHit) return `calls changed API route ${routeHit}`;
 
   // route-directory heuristic (doc 06 §4.3): a visited page's app/<segment>/**
-  const segments = visitedSegments(f.spec);
+  const segments = visitedSegments(spec);
   for (const cf of changedFiles) {
     const rel = stripRoot(cf, rootDir);
     for (const seg of segments) {
