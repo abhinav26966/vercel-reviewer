@@ -34,7 +34,10 @@ interface ChatMessage {
   content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 }
 
-const RETRYABLE = new Set([429, 500, 502, 503]);
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 524]);
+
+/** Upstream flake phrasings that arrive without a retryable code (free tiers). */
+const RETRYABLE_MESSAGE = /timeout|timed out|overloaded|temporarily/i;
 
 export class OpenAICompatProvider implements InferenceProvider {
   constructor(private readonly config: OpenAICompatConfig) {}
@@ -143,7 +146,7 @@ export class OpenAICompatProvider implements InferenceProvider {
     };
     // OpenRouter tunnels upstream provider errors inside 200 responses
     if (body.error) {
-      if (RETRYABLE.has(body.error.code ?? 0)) {
+      if (RETRYABLE.has(body.error.code ?? 0) || RETRYABLE_MESSAGE.test(body.error.message ?? "")) {
         throw new RetryableProviderError(`${model} → upstream ${body.error.code}: ${body.error.message}`);
       }
       throw new Error(`inference provider error: ${body.error.message}`);
