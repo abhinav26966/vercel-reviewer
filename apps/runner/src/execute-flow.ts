@@ -192,18 +192,20 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       if (attempt.failure) {
         failedStepId = step.id;
         failure = attempt.failure;
-        if (attempt.failure.failureClass === "assertion") {
-          // the slow/hung/dead spectrum (doc 04 §4)
-          const pageErrorsNow = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
-          const cls = classifyFailure({
-            settleTimedOut: attempt.settleTimedOut,
-            pendingRequests: tracker.pendingRequests(),
-            stepNetwork,
-            pageCrashed,
-            pageErrors: pageErrorsNow - pageErrorsBefore,
-            nextErrorOverlay,
-            blankScreenScore: blankScore,
-          });
+        // the slow/hung/dead spectrum (doc 04 §4). A dead page usually surfaces
+        // as a missed locator, so dead signals override ANY failure class; the
+        // hung signals only make sense when post-conditions were being awaited.
+        const pageErrorsNow = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
+        const cls = classifyFailure({
+          settleTimedOut: attempt.settleTimedOut,
+          pendingRequests: tracker.pendingRequests(),
+          stepNetwork,
+          pageCrashed,
+          pageErrors: pageErrorsNow - pageErrorsBefore,
+          nextErrorOverlay,
+          blankScreenScore: blankScore,
+        });
+        if (attempt.failure.failureClass === "assertion" || cls.status === "dead") {
           outcome = cls.status;
           failureClassOverride = cls.failureClass;
           failureDetail = cls.detail;
