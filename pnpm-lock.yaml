@@ -127,6 +127,9 @@ importers:
       '@flowguard/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@flowguard/inference':
+        specifier: workspace:*
+        version: link:../../packages/inference
       '@flowguard/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
