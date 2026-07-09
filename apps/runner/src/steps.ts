@@ -24,23 +24,41 @@ export interface StepContext {
   lookupSecret?: SecretLookup;
 }
 
-/** Act + settle + assert. Returns null on success, failure details otherwise. */
-export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<StepFailure | null> {
+export interface StepOutcome {
+  failure: StepFailure | null;
+  /** settle duration in ms (doc 04 §3: timing stops at settle) */
+  settleMs: number;
+  /** the settle strategy hit its timeout (hang-classifier input, doc 04 §4) */
+  settleTimedOut: boolean;
+}
+
+/** Act + settle + assert. */
+export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<StepOutcome> {
   const urlBefore = ctx.page.url();
   try {
     await act(ctx, step);
   } catch (err) {
     if (err instanceof LocatorMissError) {
-      return { failureClass: "locator_miss", message: err.message, assertions: [] };
+      return {
+        failure: { failureClass: "locator_miss", message: err.message, assertions: [] },
+        settleMs: 0,
+        settleTimedOut: false,
+      };
     }
     return {
-      failureClass: "env",
-      message: err instanceof Error ? err.message.split("\n")[0]! : String(err),
-      assertions: [],
+      failure: {
+        failureClass: "env",
+        message: err instanceof Error ? err.message.split("\n")[0]! : String(err),
+        assertions: [],
+      },
+      settleMs: 0,
+      settleTimedOut: false,
     };
   }
 
-  await settle(ctx, step, urlBefore);
+  const settleStart = Date.now();
+  const settleTimedOut = await settle(ctx, step, urlBefore);
+  const settleMs = Date.now() - settleStart;
 
   const results: StepAssertionResult[] = [];
   for (const assertion of step.postConditions) {
@@ -49,12 +67,16 @@ export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<Ste
   const failedAssertion = results.find((r) => !r.pass);
   if (failedAssertion) {
     return {
-      failureClass: "assertion",
-      message: failedAssertion.message ?? `${failedAssertion.kind} assertion failed`,
-      assertions: results,
+      failure: {
+        failureClass: "assertion",
+        message: failedAssertion.message ?? `${failedAssertion.kind} assertion failed`,
+        assertions: results,
+      },
+      settleMs,
+      settleTimedOut,
     };
   }
-  return null;
+  return { failure: null, settleMs, settleTimedOut };
 }
 
 async function act(ctx: StepContext, step: FlowStep): Promise<void> {
@@ -186,8 +208,8 @@ export async function gotoWithRetry(
   throw lastErr;
 }
 
-/** Settle strategies networkidle|navigation|timeout (doc 09 Phase 2 scope). */
-async function settle(ctx: StepContext, step: FlowStep, urlBefore: string): Promise<void> {
+/** Settle strategies networkidle|navigation|timeout; returns true when timed out. */
+async function settle(ctx: StepContext, step: FlowStep, urlBefore: string): Promise<boolean> {
   const { page, logger } = ctx;
   const { strategy, timeoutMs } = step.settle;
   try {
@@ -198,21 +220,22 @@ async function settle(ctx: StepContext, step: FlowStep, urlBefore: string): Prom
           await page.waitForTimeout(100);
         }
         await page.waitForLoadState("load", { timeout: Math.max(1, deadline - Date.now()) });
-        return;
+        return false;
       }
       case "networkidle":
         await page.waitForLoadState("networkidle", { timeout: timeoutMs });
-        return;
+        return false;
       case "timeout":
         await page.waitForTimeout(timeoutMs);
-        return;
+        return false;
       default:
         // animationQuiescence etc. land in Phase 12; bounded networkidle for now
         await page.waitForLoadState("networkidle", { timeout: timeoutMs });
-        return;
+        return false;
     }
   } catch {
-    // settle timeout is not itself a failure (doc 04 §3)
+    // settle timeout is not itself a failure (doc 04 §3) — the hang classifier decides
     logger.debug({ step: step.id, strategy }, "settle timed out — evaluating post-conditions anyway");
+    return true;
   }
 }

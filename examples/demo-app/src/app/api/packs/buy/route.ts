@@ -19,6 +19,9 @@ export async function POST(req: NextRequest) {
     await new Promise((r) => setTimeout(r, 1800));
   }
 
+  // "regression": an unindexed lookup crept into the hot path
+  await new Promise((r) => setTimeout(r, 1800));
+
   if (mockPayments()) {
     const res = NextResponse.redirect(new URL("/shop/success", req.url), 303);
     return withSession(res, { ...session, packs: session.packs + 1 });
