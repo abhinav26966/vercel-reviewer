@@ -6,13 +6,18 @@
  * Usage: pnpm exec tsx --env-file=.env scripts/soak.ts <runId> [iterations]
  */
 import { Queue } from "bullmq";
-import postgres from "postgres";
+import { sql as sqlTag } from "drizzle-orm";
+import { createDb } from "@flowguard/db";
 
 const runId = process.argv[2];
 const iterations = Number(process.argv[3] ?? 20);
 if (!runId) throw new Error("usage: soak.ts <runId> [iterations]");
 
-const sql = postgres(process.env.DATABASE_URL!);
+const db = createDb();
+const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const res = await db.execute(sqlTag(strings, ...values));
+  return res.rows as Array<Record<string, unknown>>;
+};
 const u = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
 const queue = new Queue("orchestrate", {
   connection: { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null },
@@ -52,5 +57,4 @@ for (let i = 1; i <= iterations; i++) {
 
 console.log(flakes === 0 ? `SOAK PASS: ${iterations}/${iterations} green` : `SOAK FAIL: ${flakes} flaky iteration(s)`);
 await queue.close();
-await sql.end();
 process.exit(flakes === 0 ? 0 : 1);
