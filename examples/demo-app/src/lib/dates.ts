@@ -2,3 +2,4 @@
 export function formatReceivedDate(d: Date): string {
   return `received ${d.toISOString().slice(0, 10)}`;
 }
+
