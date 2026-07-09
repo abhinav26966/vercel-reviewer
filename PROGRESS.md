@@ -2,34 +2,56 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 10 — Base-branch lifecycle — code complete (2026-07-09), live AC starts when founder merges PR #13**
+## Current phase: **Phase 10 — Base-branch lifecycle — ✅ AC PASSED (2026-07-09)**; next up: Phase 11 — Payments (Stripe)
 
-### Phase 10 state
+### Phase 10 AC evidence (live; PR #13 merge + BREAK_RIP env chaos + PR #14)
 
-Implementation complete, all gates green (148 api tests, ~230 total).
+- (a) **Merge → base run → automatic promotion**: PR #13's production deploy
+  fired a base run whose reconciliation read `{Login: "refreshed",
+  Buy & Rip: "promoted"}` — old official archived, healed pending
+  `fsv_m7z1mc9ldn2r6s` promoted to official, STALE pending
+  `fsv_px6hlx9ocbezq1` archived (newest-pending-wins rule), zero alerts
+  (the red official was explained by the approved change).
+- (b) **Next PR compares against the new behavior**: PR #14 (PackScene touch)
+  ran the PROMOTED spec (`fsv_m7z1mc9ldn2r6s` in the plan) → ✅ 7.0s.
+  No false 🔴.
+- (c) **Broken base → alert + quarantine → innocent PR ⬜**: BREAK_RIP=1 set
+  on Vercel Production env + `vercel redeploy` (which DOES emit a GitHub
+  deployment_status — same-sha runs re-run by design since env may change) →
+  reconciliation "quarantined" + alert `"Buy & Rip …" is broken on main as of
+  bbc4108 — quarantined; PRs will report ⬜ until base is green`. Innocent
+  push to PR #14 → `⬜ already broken on base | flow is quarantined — broken
+  on main since bbc4108, not caused by this PR`, WITHOUT executing the flow
+  (not selected, no runner jobs).
+- (d) **Fix base → auto-unquarantine**: BREAK_RIP removed + redeploy →
+  reconciliation "unquarantined", version back to official, base_broken
+  alert auto-acknowledged, base_recovered alert posted.
+
 Built: base-run.ts (full-suite, never diff-selected; warmup + median-of-2 +
-coverage; reconciliation per doc 05 §5 — promote / conflict-hold / quarantine
-/ auto-unquarantine / refresh; newest pending wins, stale pendings archived
-on promote), PR-side ⬜ for quarantined flows WITHOUT executing,
-deployment_status → base-run trigger (same-sha redeploys re-run: env chaos),
-manual POST /projects/:id/base-run + dashboard button, alerts (store +
-endpoints + panel + optional settings.alertWebhookUrl Slack webhook),
-scheduler (nightly 03:00 with 12h skip, hourly stuck-run sweep, daily expiry
-purge; artifact retention delegated to S3 lifecycle with a purge hook),
-per-branch serialization + newest-wins. demo-app: BREAK_RIP env chaos +
-the shop refactor the Phase 9 healed pending version expects.
+coverage; per-flow reconciliation — promote / conflict-hold / quarantine /
+auto-unquarantine / refresh; newest pending wins, stale pendings archived on
+promote; per-branch serialization + newest-wins supersede), PR-side ⬜ for
+quarantined flows without executing, deployment_status → base-run trigger
+(same-sha redeploys re-run), manual POST /projects/:id/base-run + dashboard
+button, alerts (store/endpoints/panel/ack + optional
+settings.alertWebhookUrl), scheduler (nightly 03:00 base runs w/ 12h skip,
+hourly stuck-run sweep, daily credential-expiry purge; artifact retention
+via S3 lifecycle + hook), demo-app BREAK_RIP env chaos. 16 new tests
+(~231 total).
 
-**Live AC plan (after PR #13 merges):**
-1. The merge deploys production with "Buy a Pack" → deployment_status fires a
-   base run → official rip spec RED, newest pending (fsv_m7z1mc9ldn2r6s,
-   healed locator) GREEN → **promotion**; stale pending fsv_px6hlx9ocbezq1
-   archived. Verify: version statuses + run plan.reconciliation.
-2. Open a trivial PR → rip flow runs with the PROMOTED spec → ✅ no false 🔴.
-3. Set BREAK_RIP=1 on Vercel Production env + redeploy → base run → rip RED →
-   base_broken alert + quarantine. Open innocent PR → ⬜ without executing.
-4. Remove BREAK_RIP + redeploy → base green → auto-unquarantine +
-   base_recovered alert. (If `vercel redeploy` doesn't emit a GitHub
-   deployment_status, use the manual base-run endpoint — same pipeline.)
+### Phase 10 lessons
+
+- **`vercel redeploy` emits GitHub deployment_status events** — env-flip +
+  redeploy is a merge-free way to change base behavior; the handler re-runs
+  same-sha base runs for exactly this reason.
+- Multiple pending versions per flow is a REAL state (every 🔵 approval and
+  drift-accept mints one) — reconciliation must pick the newest and retire
+  stale siblings on promotion, or a stale pending blocks promotion forever.
+- The Phase-1 stub had left base-run rows in `planning` forever; the Phase 10
+  trigger resets same-key runs to planning and enqueues, which also absorbed
+  those orphans harmlessly.
+- Login-once cold starts on a fresh redeploy pushed the smoke flow to ~77s —
+  worth watching; warmup covers measured flows, not the login-once context.
 
 ### Phase 9 AC evidence (live, PRs #9/#10/#11)
 
@@ -512,15 +534,17 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 10 — Base-branch lifecycle** (doc 09; doc 05 §5): full-suite base
-  run on base-branch deployment success (warmup+measure, coverage + perf +
-  spec refresh), promotion reconciliation (the two pending versions from
-  Phase 9 — `fsv_px6hlx9ocbezq1`, `fsv_m7z1mc9ldn2r6s` — are live test
-  material: neither matches current main, so both should hit the
-  alert+hold+needsAttention path), broken-on-base alert + quarantine flip +
-  auto-unquarantine + PR-side ⬜, nightly scheduler + stuck-run sweeper +
-  retention purge, per-branch serialization + newest-wins.
-- First: founder merges the phase-9 PR (commits on local main).
-- `agentHealEnabled` is now ON for the demo project; worker start needs
-  INFERENCE_API_KEY + INFERENCE_BASE_URL exported (see restart pattern).
-- No new founder resources needed.
+- **Phase 11 — Payments (Stripe)** (doc 09; doc 07 §5): payment step type in
+  the runner (Stripe Checkout test-card fill), payment config per project
+  with the consent gate (explicit user-configured test card even though
+  4242… is public), PR-scoped overrides, and the MANDATORY live-mode guard —
+  positive confirmation of test mode before any card entry, independent of
+  user config, fail closed. Demo app already has Stripe Checkout wired
+  (STRIPE_SECRET_KEY sk_test_… on Vercel; MOCK_PAYMENTS=0 currently... check
+  which mode production runs in before starting).
+- The demo-app cookie-session note from Phase 2 ("webhook AC needs
+  server-side state") may bite in Phase 11's confirm step — check
+  /api/packs/confirm behavior first.
+- Local main == origin/main (all merged); no unpushed work.
+- No new founder resources needed until live Stripe AC (test keys already
+  configured on Vercel).
