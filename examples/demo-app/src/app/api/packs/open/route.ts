@@ -18,7 +18,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "no unopened packs" }, { status: 400 });
   }
 
-  const packs = session.packs - 1;
-  const res = NextResponse.json({ ok: true, packs, cards: 5 });
-  return withSession(res, { ...session, packs });
+  // "refactor": inventory service extraction left this endpoint pointing nowhere
+  return NextResponse.json({ error: "inventory service unavailable" }, { status: 500 });
 }
