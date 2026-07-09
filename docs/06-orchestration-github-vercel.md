@@ -48,7 +48,7 @@ Coverage maps refresh on every full base run (doc 04 §7, 05 §5); staleness bou
 
 ## 5. Caching (the cost model)
 
-- **Base run-result cache:** keyed `(flow_spec_version_id, base_sha)`. The base didn't change because head got a new push → across N pushes to a PR, base flows run once. Invalidation: merge base moved (base branch advanced under the PR), or spec version changed.
+- **Base run-result cache:** keyed `(flow_spec_version_id, base_sha)`. The base didn't change because head got a new push → across N pushes to a PR, base flows run once. Invalidation: merge base moved (base branch advanced under the PR), or spec version changed. **Coverage seeding (Phase 8):** while a flow has no `coverage_maps` row for the base branch, the cache is bypassed once so a base run can collect coverage — otherwise the cold-start rule ("no coverage → always selected") would never retire.
 - **storageState cache:** `(persona, deployment_id)` — sessions die with each new preview build (doc 07).
 - **Perf baselines:** refreshed by base runs; PR perf gates read the entry at the resolved merge base (or nearest ancestor).
 - **Warm-up policy:** one warm-up per (target, run) before measured jobs, discarded; measured = median of 2 (configurable 3).

@@ -11,6 +11,8 @@ import { redactHarFile } from "./har-redact.js";
 import { NetworkTracker } from "./network-tracker.js";
 import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
+import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
+import { collectCoverage, startCoverage } from "./coverage.js";
 import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
@@ -57,7 +59,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   };
   let failedStepId: string | null = null;
   let failure: StepFailure | null = null;
-  let outcome: "passed" | "failed" | "error" | "skipped" = "passed";
+  let outcome: "passed" | "failed" | "error" | "skipped" | "hung" | "dead" = "passed";
+  let failureDetail: string | null = null;
+  let nextErrorOverlay = false;
+  let blankScore = 0;
+  let failureClassOverride: string | null = null;
+  let coverage: RunFlowResult["coverage"] = null;
   const flowStart = Date.now();
   const tracker = new NetworkTracker();
 
@@ -110,6 +117,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
 
     const page = await context.newPage();
     tracker.attach(page);
+    let coverageStarted = false;
+    if (job.collect.coverage) {
+      coverageStarted = await startCoverage(page, logger);
+    }
     page.on("console", (msg) => {
       const line = { ts: Date.now() - flowStart, text: `[${msg.type()}] ${msg.text()}` };
       consoleLines.push(line);
@@ -156,31 +167,60 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       }
 
       const stepStart = Date.now();
-      let attemptFailure = await runStepOnce(stepCtx, step);
-      if (attemptFailure) {
+      const pageErrorsBefore = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
+      let attempt = await runStepOnce(stepCtx, step);
+      if (attempt.failure) {
         // one deterministic retry: page may have been mid-hydration (doc 04 §3)
-        logger.warn({ step: step.id, reason: attemptFailure.message }, "step failed — deterministic retry");
-        attemptFailure = await runStepOnce(stepCtx, step);
+        logger.warn({ step: step.id, reason: attempt.failure.message }, "step failed — deterministic retry");
+        attempt = await runStepOnce(stepCtx, step);
       }
       const stepEnd = Date.now();
+      const stepNetwork = tracker.window(stepStart, stepEnd);
 
-      const screenshotKey = attemptFailure
-        ? await captureFailureBundle(page, step, artifacts, job, tracker, consoleLines, logger)
-        : null;
+      let screenshotKey: string | null = null;
+      if (attempt.failure) {
+        // classify BEFORE the bundle capture so the score comes from the same shot
+        const shot = await page.screenshot({ timeout: 5000 }).catch(() => null);
+        blankScore = shot ? blankScreenScore(shot) : 0;
+        nextErrorOverlay = await detectNextErrorOverlay(page);
+        screenshotKey = await captureFailureBundle(page, step, artifacts, job, tracker, consoleLines, logger, shot);
+      }
 
       steps.push({
         id: step.id,
         durationMs: stepEnd - stepStart,
-        settleMs: 0, // measured properly with the perf work in Phase 7
-        network: tracker.window(stepStart, stepEnd),
+        settleMs: attempt.settleMs,
+        network: stepNetwork,
         screenshot: screenshotKey,
-        assertions: attemptFailure?.assertions ?? lastPassedAssertions(step),
+        assertions: attempt.failure?.assertions ?? lastPassedAssertions(step),
       });
 
-      if (attemptFailure) {
+      if (attempt.failure) {
         failedStepId = step.id;
-        failure = attemptFailure;
-        outcome = "failed";
+        failure = attempt.failure;
+        // the slow/hung/dead spectrum (doc 04 §4). A dead page usually surfaces
+        // as a missed locator, so dead signals override ANY failure class; the
+        // hung signals only make sense when post-conditions were being awaited.
+        const pageErrorsNow = consoleErrors.filter((e) => e.text.startsWith("pageerror:")).length;
+        const cls = classifyFailure({
+          settleTimedOut: attempt.settleTimedOut,
+          pendingRequests: tracker.pendingRequests(),
+          stepNetwork,
+          pageCrashed,
+          pageErrors: pageErrorsNow - pageErrorsBefore,
+          nextErrorOverlay,
+          blankScreenScore: blankScore,
+        });
+        if (attempt.failure.failureClass === "assertion" || cls.status === "dead") {
+          outcome = cls.status;
+          failureClassOverride = cls.failureClass;
+          failureDetail = cls.detail;
+          if (cls.detail) {
+            failure = { ...failure, message: `${failure.message} · ${cls.detail}` };
+          }
+        } else {
+          outcome = "failed";
+        }
         break; // subsequent steps are skipped (doc 04 §3)
       }
     }
@@ -191,6 +231,14 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       if (collectTrace) await context.tracing.stop({ path: tracePath }).catch(() => {});
       const page2 = context.pages()[0];
       const video = page2?.video();
+      if (coverageStarted && page2) {
+        coverage = await collectCoverage(
+          page2,
+          tracker.window(0, Date.now()),
+          job.target.deploymentUrl,
+          logger,
+        ).catch(() => null);
+      }
       await context.close();
       context = null;
       const put = async (name: string, fn: () => Promise<string>) => {
@@ -220,6 +268,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           "application/json",
         ),
       );
+      if (coverage) {
+        const cov = coverage;
+        await put("coverage", () =>
+          artifacts.putBuffer(artifactKey(job, "coverage.json"), JSON.stringify(cov, null, 2), "application/json"),
+        );
+      }
     }
 
     return finalize(outcome, failedStepId, failure);
@@ -233,7 +287,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   }
 
   function finalize(
-    status: "passed" | "failed" | "error" | "skipped",
+    status: "passed" | "failed" | "error" | "skipped" | "hung" | "dead",
     failedStep: string | null,
     fail: StepFailure | null,
   ): RunFlowResult {
@@ -248,7 +302,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         failureClass:
           status === "error" && fail?.message.startsWith("login failed")
             ? "login_failed"
-            : (fail?.failureClass ?? null),
+            : (failureClassOverride ?? fail?.failureClass ?? null),
         steps,
         perf: { flowTotalMs: Date.now() - flowStart, regressions: [] },
         artifacts: artifactKeys,
@@ -256,9 +310,11 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           pendingRequestsAtTimeout: tracker.pendingRequests(),
           consoleErrors: consoleErrors.slice(-20),
           pageCrashed,
-          nextErrorOverlay: false, // classifier lands in Phase 7
-          blankScreenScore: 0,
+          nextErrorOverlay,
+          blankScreenScore: blankScore,
+          failureDetail,
         },
+        coverage,
       }),
     );
   }
@@ -276,9 +332,10 @@ async function captureFailureBundle(
   tracker: NetworkTracker,
   consoleLines: Array<{ ts: number; text: string }>,
   logger: Logger,
+  existingShot?: Buffer | null,
 ): Promise<string | null> {
   try {
-    const shot = await page.screenshot({ timeout: 5000 });
+    const shot = existingShot ?? (await page.screenshot({ timeout: 5000 }));
     const key = await artifacts.putBuffer(
       artifactKey(job, `steps/${step.id}/failure.png`),
       shot,

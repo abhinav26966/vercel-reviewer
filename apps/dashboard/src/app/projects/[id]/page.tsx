@@ -34,9 +34,17 @@ interface RunRow {
   prNumber: number | null;
 }
 
+interface FlowRow {
+  id: string;
+  name: string;
+  tier: string;
+  archived: boolean;
+}
+
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [creds, setCreds] = useState<CredentialSet[]>([]);
+  const [flows, setFlows] = useState<FlowRow[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
@@ -51,6 +59,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   const refresh = useCallback(() => {
     api<CredentialSet[]>(`/api/projects/${id}/credentials`).then(setCreds).catch((e) => setError(String(e)));
+    api<FlowRow[]>(`/api/projects/${id}/flows`).then(setFlows).catch(() => {});
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
     api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
     api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
@@ -161,6 +170,44 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           Save
         </button>
       </form>
+
+      <h2>Flows</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Flow</th>
+            <th>Tier</th>
+            <th>Smoke (always runs)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {flows.map((f) => (
+            <tr key={f.id} style={f.archived ? { opacity: 0.5 } : undefined}>
+              <td>
+                {f.name}
+                {f.archived ? <span className="pill"> archived</span> : null}
+              </td>
+              <td>
+                <span className="pill">{f.tier}</span>
+              </td>
+              <td>
+                <input
+                  type="checkbox"
+                  data-testid={`smoke-${f.id}`}
+                  checked={f.tier === "smoke"}
+                  onChange={async (e) => {
+                    await api(`/api/flows/${f.id}/tier`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ tier: e.target.checked ? "smoke" : "standard" }),
+                    });
+                    refresh();
+                  }}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <h2>Recordings & drafts</h2>
       <table>

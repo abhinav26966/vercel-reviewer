@@ -94,6 +94,8 @@ export const RunDiagnosticsSchema = z.object({
   nextErrorOverlay: z.boolean().default(false),
   /** Fraction of near-uniform pixels in the settle screenshot (doc 04 §4 "Dead"). */
   blankScreenScore: z.number().min(0).max(1).default(0),
+  /** Human phrase from the hung/dead classifier, e.g. "Next.js error overlay present". */
+  failureDetail: z.string().nullable().default(null),
 });
 
 export const HealAttemptSchema = z.object({
@@ -102,6 +104,20 @@ export const HealAttemptSchema = z.object({
   /** Proposed spec patch; NEVER auto-applied (doc 04 §5). */
   proposedPatch: z.unknown().nullable(),
 });
+
+/**
+ * Coverage collected over the whole flow (doc 04 §7): repo files come from
+ * source-map resolution of executed chunks (chunk-level attribution — an
+ * executed chunk attributes all its sources); apiRoutes are URL paths of
+ * first-party /api/* requests, mapped to route files at selection time.
+ */
+export const FlowCoverageSchema = z.object({
+  files: z.array(z.string()).default([]),
+  apiRoutes: z.array(z.string()).default([]),
+  /** false ⇒ source maps unavailable; selection falls back to route heuristics. */
+  sourceMapsResolved: z.boolean().default(false),
+});
+export type FlowCoverage = z.infer<typeof FlowCoverageSchema>;
 
 export const RunFlowResultSchema = z.object({
   runId: z.string().min(1),
@@ -127,6 +143,8 @@ export const RunFlowResultSchema = z.object({
     coverage: null,
   }),
   diagnostics: RunDiagnosticsSchema.prefault({}),
+  /** Present only when the job asked for coverage collection (base runs). */
+  coverage: FlowCoverageSchema.nullable().default(null),
 });
 
 export type RunFlowResult = z.infer<typeof RunFlowResultSchema>;

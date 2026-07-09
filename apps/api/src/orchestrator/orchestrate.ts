@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import {
   BLOCKING_VERDICTS,
   ExecuteFlowJobSchema,
+  ProjectSettingsSchema,
   VERDICT_EMOJI,
   VERDICT_LABEL,
   type ExecuteFlowJob,
@@ -20,6 +21,8 @@ import type { Store } from "../store.js";
 import { splitRepo } from "../handlers/deps.js";
 import { compareFlow, type ArtifactLinker } from "./comparator.js";
 import { buildConfigBundle, MissingCredentialsError } from "./config-bundle.js";
+import { MEASURE_SAMPLES, mergeMeasuredResults } from "./measure.js";
+import { selectFlows, type SelectableFlow } from "./select.js";
 
 /**
  * The run state machine (doc 06 §3), Phase 3 scope:
@@ -107,15 +110,14 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       logger.info({ superseded: old.id, by: runId }, "older run superseded");
     }
 
-    // ── planning: all non-archived official flows (diff-aware selection = Phase 8) ──
-    const flowList = await store.listOfficialFlows(project.id, pr.baseBranch);
-    if (flowList.length === 0) {
+    // ── planning: all non-archived official flows, then diff-aware selection ──
+    const allFlows = await store.listOfficialFlows(project.id, pr.baseBranch);
+    if (allFlows.length === 0) {
       await sticky(renderPreviewDetectedComment({ previewUrl: headDeployment.url, sha: run.headSha }));
       await status("success", "preview detected — no flows configured yet");
       await store.updateRun(runId, { state: "done", finishedAt: new Date() });
       return;
     }
-    await status("pending", `running ${flowList.length} flows…`);
 
     // ── resolving_base ──
     await store.updateRun(runId, { state: "resolving_base" });
@@ -126,15 +128,79 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     });
     const mergeBaseSha: string = cmp.merge_base_commit.sha;
 
+    // ── diff-aware selection (doc 06 §4), recomputed on every push ──
+    const settings = ProjectSettingsSchema.parse(project.settings ?? {});
+    const changedFiles = (cmp.files ?? []).flatMap((f) =>
+      f.previous_filename ? [f.filename, f.previous_filename] : [f.filename],
+    );
+    const coverageByFlow = new Map<string, Awaited<ReturnType<Store["getLatestCoverageMap"]>>>();
+    for (const f of allFlows) {
+      coverageByFlow.set(f.flowId, await store.getLatestCoverageMap(f.flowId, pr.baseBranch));
+    }
+    const selectable: SelectableFlow[] = allFlows.map((f) => ({
+      flowId: f.flowId,
+      flowName: f.flowName,
+      tier: f.tier,
+      spec: f.spec,
+      coverage: coverageByFlow.get(f.flowId) ?? null,
+    }));
+    const selection = selectFlows({
+      changedFiles,
+      diffTruncated: (cmp.files?.length ?? 0) >= 300,
+      flows: selectable,
+      settings,
+    });
+    const selectedIds = new Set(selection.selected.map((s) => s.flowId));
+    const flowList = allFlows.filter((f) => selectedIds.has(f.flowId));
+    const reasonByFlow = new Map(selection.selected.map((s) => [s.flowId, s.reason]));
+    logger.info(
+      { runId, selected: selection.selected.length, skipped: selection.skipped.length, fanout: selection.fanout },
+      "diff-aware selection",
+    );
+
     const baseDeployment = await resolveBaseDeployment(deps, project, mergeBaseSha, octokit, owner, repo);
     await store.updateRun(runId, {
       mergeBaseSha,
       baseDeploymentId: baseDeployment?.id ?? null,
       plan: {
-        flows: flowList.map((f) => ({ flowId: f.flowId, specVersionId: f.specVersionId, reason: "all-official" })),
+        flows: flowList.map((f) => ({
+          flowId: f.flowId,
+          specVersionId: f.specVersionId,
+          reason: reasonByFlow.get(f.flowId) ?? "selected",
+        })),
+        skipped: selection.skipped,
+        fanout: selection.fanout,
         baseResolved: Boolean(baseDeployment),
       },
     });
+
+    const skippedRows: FlowReviewRow[] = selection.skipped.map((s) => ({
+      flowName: s.flowName,
+      emoji: VERDICT_EMOJI.skipped,
+      label: VERDICT_LABEL.skipped,
+      detail: s.reason,
+    }));
+    if (flowList.length === 0) {
+      // nothing the diff could break — report the audit trail and pass
+      await store.updateRun(runId, { state: "reporting" });
+      await store.deleteVerdictsForRun(runId);
+      const pushNumber0 = await store.countRunsForPr(pr.id);
+      await sticky(
+        renderFlowReviewComment({
+          headSha: run.headSha,
+          pushNumber: pushNumber0,
+          baseBranch: pr.baseBranch,
+          mergeBaseSha,
+          previewHost: headDeployment.url.replace(/^https?:\/\//, ""),
+          rows: skippedRows,
+          runDetails: selectionDetails(selection.selected, selection.skipped.length, allFlows.length, selection.fanout, null),
+        }),
+      );
+      await status("success", "no flows affected by this diff (smoke tier empty)");
+      await store.updateRun(runId, { state: "done", finishedAt: new Date() });
+      return;
+    }
+    await status("pending", `running ${flowList.length} of ${allFlows.length} flows…`);
 
     // ── executing: fan out head (+ base on cache miss) jobs ──
     await store.updateRun(runId, { state: "executing" });
@@ -142,16 +208,21 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       ? await deps.resolveSecret(project.vercelBypassSecretRef)
       : null;
     const timeoutMs = deps.flowJobTimeoutMs ?? 300_000;
-    // by convention the flow named "Login" establishes persona sessions (doc 07 §5)
-    const loginSpec = flowList.find((f) => f.flowName.toLowerCase() === "login")?.spec ?? null;
+    // by convention the flow named "Login" establishes persona sessions (doc 07 §5);
+    // it resolves from ALL flows — being skipped by selection doesn't remove the role
+    const loginSpec = allFlows.find((f) => f.flowName.toLowerCase() === "login")?.spec ?? null;
+    // coverage seeding: a flow with no coverage row yet forces one base re-run
+    // WITH collection, even on cache hit — else the cold-start rule never retires
+    const cachedBaseFor = async (f: (typeof flowList)[number]) =>
+      coverageByFlow.get(f.flowId) ? store.getCachedBaseResult(f.specVersionId, mergeBaseSha) : null;
 
     interface FlowPlan {
       flowId: string;
       flowName: string;
       specVersionId: string;
       spec: (typeof flowList)[number]["spec"];
-      headJobId: string | null;
-      baseJobId: string | null;
+      headJobIds: string[];
+      baseJobIds: string[];
       cachedBase: RunFlowResult | null;
       /** synthesized without execution (e.g. missing credentials) */
       syntheticHead: RunFlowResult | null;
@@ -163,7 +234,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       deploymentUrl: string,
       sha: string,
       deploymentId: string,
-    ): Promise<{ jobId: string | null; synthetic: RunFlowResult | null }> => {
+    ): Promise<{ jobIds: string[]; synthetic: RunFlowResult | null }> => {
       try {
         const configBundle = await buildConfigBundle(
           {
@@ -175,51 +246,94 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           },
           f.spec,
         );
-        const jobId = `${runId}-${f.flowId}-${target}`;
-        await deps.enqueueFlowJob(
-          buildJob(runId, f, target, deploymentUrl, sha, bypassSecret, deploymentId, configBundle),
-          jobId,
-        );
-        return { jobId, synthetic: null };
+        // median-of-N measurement (doc 04 §4): sample 1 is authoritative for
+        // pass/fail; later samples contribute timing only. Base sample 1 also
+        // collects coverage — the coverage_maps refresh path (doc 04 §7)
+        const jobIds: string[] = [];
+        for (let sample = 1; sample <= MEASURE_SAMPLES; sample++) {
+          const jobId = `${runId}-${f.flowId}-${target}-m${sample}`;
+          await deps.enqueueFlowJob(
+            buildJob(runId, f, target, deploymentUrl, sha, bypassSecret, deploymentId, configBundle, "measure", {
+              coverage: target === "base" && sample === 1,
+            }),
+            jobId,
+          );
+          jobIds.push(jobId);
+        }
+        return { jobIds, synthetic: null };
       } catch (err) {
         if (err instanceof MissingCredentialsError) {
           logger.warn({ flow: f.flowId, persona: err.persona, target }, "no credentials — flow not executed");
-          return { jobId: null, synthetic: syntheticLoginFailure(runId, f, target, err.message) };
+          return { jobIds: [], synthetic: syntheticLoginFailure(runId, f, target, err.message) };
         }
         throw err;
       }
     };
 
+    // warm-up per target, timings discarded (doc 04 §4: serverless cold starts
+    // are the #1 flake source) — the cheapest flow warms routes + session cache
+    const warmupFlow = flowList[0]!;
+    const warmup = async (target: "head" | "base", url: string, sha: string, depId: string) => {
+      try {
+        const bundle = await buildConfigBundle(
+          { store, projectId: project.id, prNumber: target === "head" ? pr.number : null, deploymentId: depId, loginSpec: warmupFlow.flowName.toLowerCase() === "login" ? null : loginSpec },
+          warmupFlow.spec,
+        );
+        const jobId = `${runId}-warmup-${target}`;
+        await deps.enqueueFlowJob(
+          buildJob(runId, warmupFlow, target, url, sha, bypassSecret, depId, bundle, "warmup"),
+          jobId,
+        );
+        await deps.awaitFlowResult(jobId, timeoutMs);
+      } catch (err) {
+        logger.warn({ err: String(err).slice(0, 120), target }, "warm-up failed — proceeding to measured runs");
+      }
+    };
+    const anyBaseCacheMiss = baseDeployment
+      ? (await Promise.all(flowList.map((f) => cachedBaseFor(f)))).some((c) => c === null)
+      : false;
+    await Promise.all([
+      warmup("head", headDeployment.url, run.headSha, headDeployment.id),
+      ...(baseDeployment && anyBaseCacheMiss
+        ? [warmup("base", baseDeployment.url, mergeBaseSha, baseDeployment.id)]
+        : []),
+    ]);
+
     const plans: FlowPlan[] = [];
     let cacheHits = 0;
     for (const f of flowList) {
       const headRes = await enqueueTarget(f, "head", headDeployment.url, run.headSha, headDeployment.id);
-      let baseJobId: string | null = null;
+      let baseJobIds: string[] = [];
       let cachedBase: RunFlowResult | null = null;
       if (baseDeployment) {
-        const cached = await store.getCachedBaseResult(f.specVersionId, mergeBaseSha);
+        const cached = await cachedBaseFor(f);
         if (cached) {
           cachedBase = cached.result;
           cacheHits++;
         } else {
           const baseRes = await enqueueTarget(f, "base", baseDeployment.url, mergeBaseSha, baseDeployment.id);
-          baseJobId = baseRes.jobId;
+          baseJobIds = baseRes.jobIds;
         }
       }
       plans.push({
         ...f,
-        headJobId: headRes.jobId,
-        baseJobId,
+        headJobIds: headRes.jobIds,
+        baseJobIds,
         cachedBase,
         syntheticHead: headRes.synthetic,
       });
     }
 
+    const awaitMerged = async (jobIds: string[]): Promise<RunFlowResult> => {
+      const [m1, ...rest] = await Promise.all(jobIds.map((id) => deps.awaitFlowResult(id, timeoutMs)));
+      return mergeMeasuredResults(m1!, rest[0] ?? null);
+    };
+
     const headStart = Date.now();
     const outcomes = await Promise.all(
       plans.map(async (p) => {
-        const head = p.syntheticHead ?? (await deps.awaitFlowResult(p.headJobId!, timeoutMs));
-        const base = p.baseJobId ? await deps.awaitFlowResult(p.baseJobId, timeoutMs) : p.cachedBase;
+        const head = p.syntheticHead ?? (await awaitMerged(p.headJobIds));
+        const base = p.baseJobIds.length > 0 ? await awaitMerged(p.baseJobIds) : p.cachedBase;
         return { plan: p, head, base };
       }),
     );
@@ -251,8 +365,35 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           result: o.base,
           fromCache: o.plan.cachedBase !== null,
         });
-        if (o.plan.baseJobId) {
+        if (o.plan.baseJobIds.length > 0) {
           await store.upsertBaseCache(o.plan.specVersionId, mergeBaseSha, resultId);
+          // coverage_maps refresh (doc 04 §7): store repo-relative paths so
+          // selection intersects the GitHub diff directly
+          if (o.base.status === "passed" && o.base.coverage) {
+            await store.upsertCoverageMap({
+              flowId: o.plan.flowId,
+              branch: pr.baseBranch,
+              sha: mergeBaseSha,
+              files: o.base.coverage.files.map((file) =>
+                settings.rootDir ? `${settings.rootDir}/${file}` : file,
+              ),
+              apiRoutes: o.base.coverage.apiRoutes,
+            });
+          }
+          // perf baseline write path (doc 05 §4; full base-run refresh in Phase 10)
+          for (const step of o.base.steps) {
+            const stepSpec = o.plan.spec.steps.find((st) => st.id === step.id);
+            if (stepSpec?.timingBaselineKey && o.base.status === "passed") {
+              await store.upsertPerfBaseline({
+                flowId: o.plan.flowId,
+                branch: pr.baseBranch,
+                sha: mergeBaseSha,
+                stepKey: stepSpec.timingBaselineKey,
+                medianMs: step.durationMs,
+                samples: MEASURE_SAMPLES,
+              });
+            }
+          }
         }
       }
     }
@@ -297,8 +438,14 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         baseBranch: pr.baseBranch,
         mergeBaseSha: baseDeployment ? mergeBaseSha : null,
         previewHost: headDeployment.url.replace(/^https?:\/\//, ""),
-        rows,
-        runDetails: `base cache hit ${cacheHits}/${flowList.length} flows · head run ${headRunSecs}s · flows selected ${flowList.length}/${flowList.length} (diff-aware selection lands in Phase 8)`,
+        rows: [...rows, ...skippedRows],
+        runDetails: selectionDetails(
+          selection.selected,
+          selection.skipped.length,
+          allFlows.length,
+          selection.fanout,
+          `base cache hit ${cacheHits}/${flowList.length} flows · head run ${headRunSecs}s`,
+        ),
       }),
     );
 
@@ -322,6 +469,25 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
   }
 }
 
+/** The comment's details block: selection audit trail + run stats (doc 06 §4.4). */
+function selectionDetails(
+  selected: Array<{ flowName: string; reason: string }>,
+  skippedCount: number,
+  totalFlows: number,
+  fanout: string | null,
+  runStats: string | null,
+): string {
+  const lines = [
+    `flows selected ${selected.length}/${totalFlows} (diff-aware)${fanout ? ` — fan-out: ${fanout}` : ""}${runStats ? ` · ${runStats}` : ""}`,
+  ];
+  if (selected.length > 0) {
+    lines.push("", "selection:");
+    for (const s of selected) lines.push(`- ${s.flowName}: ${s.reason}`);
+  }
+  if (skippedCount > 0) lines.push(`- (${skippedCount} skipped — ⚪ rows above)`);
+  return lines.join("\n");
+}
+
 function buildJob(
   runId: string,
   f: { flowId: string; specVersionId: string; spec: ExecuteFlowJob["spec"] },
@@ -331,6 +497,8 @@ function buildJob(
   bypassSecret: string | null,
   deploymentId: string,
   configBundle: ExecuteFlowJob["configBundle"],
+  mode: "measure" | "warmup" = "measure",
+  collect: { coverage?: boolean } = {},
 ): ExecuteFlowJob {
   return ExecuteFlowJobSchema.parse({
     runId,
@@ -345,8 +513,8 @@ function buildJob(
       deploymentId,
     },
     configBundle,
-    mode: "measure",
-    collect: { coverage: false, har: true, video: true },
+    mode,
+    collect: { coverage: collect.coverage ?? false, har: true, video: mode !== "warmup" },
     abortToken: runId,
   });
 }
@@ -376,7 +544,9 @@ function syntheticLoginFailure(
       pageCrashed: false,
       nextErrorOverlay: false,
       blankScreenScore: 0,
+      failureDetail: null,
     },
+    coverage: null,
   };
 }
 

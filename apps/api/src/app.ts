@@ -58,7 +58,7 @@ export function buildApp(config: AppConfig) {
   // local-dev CORS for the dashboard (org auth arrives in Phase 13)
   app.addHook("onSend", async (_req, reply) => {
     reply.header("access-control-allow-origin", "*");
-    reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+    reply.header("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
     reply.header("access-control-allow-headers", "content-type");
   });
   app.options("/*", async (_req, reply) => reply.code(204).send());
@@ -237,6 +237,27 @@ export function buildApp(config: AppConfig) {
   app.get("/api/projects/:id/drafts", async (req) => {
     const { id } = req.params as { id: string };
     return store().listDraftVersions(id);
+  });
+
+  app.get("/api/projects/:id/flows", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listFlows(id);
+  });
+
+  // smoke-tier toggle (doc 06 §4.2) — smoke flows run on every push regardless of diff
+  app.patch("/api/flows/:id/tier", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    let body: { tier?: string };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (body.tier !== "smoke" && body.tier !== "standard") {
+      return reply.code(400).send({ error: 'tier must be "smoke" or "standard"' });
+    }
+    await store().setFlowTier(id, body.tier);
+    return { ok: true, flowId: id, tier: body.tier };
   });
 
   app.get("/api/drafts/:id", async (req, reply) => {

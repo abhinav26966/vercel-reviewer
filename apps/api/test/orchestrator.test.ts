@@ -82,7 +82,9 @@ function makeHarness(opts: {
   headResults?: Record<string, RunFlowResult>;
   baseResults?: Record<string, RunFlowResult>;
   baseDeploymentAvailable?: boolean;
-  flows?: Array<{ flowId: string; flowName: string; specVersionId: string }>;
+  flows?: Array<{ flowId: string; flowName: string; specVersionId: string; tier?: string }>;
+  /** changed files reported by the compare API (default: no diff info → cold start). */
+  changedFiles?: string[];
 }): Harness {
   const store = new FakeStore();
   store.projects.push({ ...boundProject, id: "prj_1", vercelProjectId: "prj_v", vercelTokenRef: "sec_tok", vercelBypassSecretRef: "sec_byp" });
@@ -90,13 +92,17 @@ function makeHarness(opts: {
   store.deployments.push({ id: "dep_head", projectId: "prj_1", sha: "headsha", url: "https://head.vercel.app", environment: "preview", state: "ready", branch: "feat" });
   store.runs.push({ id: "run_1", projectId: "prj_1", kind: "pr", state: "planning", prId: "pull_1", headSha: "headsha", headDeploymentId: "dep_head", branch: null });
   for (const f of opts.flows ?? [{ flowId: "flw_rip", flowName: "Rip", specVersionId: "fsv_1" }]) {
-    store.officialFlows.push({ ...f, tier: "standard", spec: { ...spec, flowId: f.flowId }, branch: "main", projectId: "prj_1" });
+    store.officialFlows.push({ tier: "standard", ...f, spec: { ...spec, flowId: f.flowId }, branch: "main", projectId: "prj_1" });
   }
 
   const octo = fakeOctokit({ openPrs: [], branchContains: { main: ["mergebase"] } });
-  // compare API for merge base
+  // compare API for merge base + changed files (selection input)
   (octo.octokit.rest.repos as unknown as Record<string, unknown>)["compareCommitsWithBasehead"] = async () => ({
-    data: { status: "diverged", merge_base_commit: { sha: "mergebase" } },
+    data: {
+      status: "diverged",
+      merge_base_commit: { sha: "mergebase" },
+      files: (opts.changedFiles ?? []).map((filename) => ({ filename })),
+    },
   });
 
   const enqueued: string[] = [];
@@ -116,9 +122,14 @@ function makeHarness(opts: {
     }),
     enqueueFlowJob: async (_job, jobId) => void enqueued.push(jobId),
     awaitFlowResult: async (jobId) => {
+      // ids: <runId>-warmup-<target> | <runId>-<flowId>-<target>-m<N>
       const parts = jobId.split("-");
-      const target = parts.at(-1);
-      const flowId = parts.slice(1, -1).join("-");
+      if (parts[1] === "warmup") {
+        return opts.headResults ? Object.values(opts.headResults)[0]! : ({} as RunFlowResult);
+      }
+      const sample = parts.at(-1);
+      const target = sample?.startsWith("m") ? parts.at(-2) : sample;
+      const flowId = parts.slice(1, sample?.startsWith("m") ? -2 : -1).join("-");
       const table = target === "head" ? opts.headResults : opts.baseResults;
       const r = table?.[flowId!];
       if (!r) throw new Error(`no scripted result for ${jobId}`);
@@ -174,7 +185,14 @@ describe("orchestrateRun", () => {
     });
     await orchestrateRun(h.deps, "run_1");
 
-    expect(h.enqueued).toEqual(["run_1-flw_rip-head", "run_1-flw_rip-base"]);
+    expect(h.enqueued).toEqual([
+      "run_1-warmup-head",
+      "run_1-warmup-base",
+      "run_1-flw_rip-head-m1",
+      "run_1-flw_rip-head-m2",
+      "run_1-flw_rip-base-m1",
+      "run_1-flw_rip-base-m2",
+    ]);
     expect(h.store.runs[0]!.state).toBe("done");
     expect(h.store.verdicts).toEqual([
       expect.objectContaining({ verdict: "passing", flowId: "flw_rip" }),
@@ -219,7 +237,7 @@ describe("orchestrateRun", () => {
       baseDeploymentAvailable: false,
     });
     await orchestrateRun(h.deps, "run_1");
-    expect(h.enqueued).toEqual(["run_1-flw_rip-head"]); // no base job
+    expect(h.enqueued.filter((j) => j.includes("-base"))).toHaveLength(0); // no base jobs
     expect(h.octo.comments[0]!.body).toContain("Base comparison unavailable");
     expect(h.store.verdicts[0]!.verdict).toBe("env_issue");
   });
@@ -227,7 +245,10 @@ describe("orchestrateRun", () => {
   it("base cache hit → base job NOT enqueued, result copied with from_cache", async () => {
     const h = makeHarness({
       headResults: { flw_rip: result("head", "passed") },
+      changedFiles: ["src/rip.ts"],
     });
+    // coverage exists (else the seeding rule forces a base re-run) and covers the diff
+    h.store.coverageMapRows.push({ flowId: "flw_rip", branch: "main", sha: "mergebase", files: ["src/rip.ts"], apiRoutes: [] });
     // pre-warm the cache
     const cachedId = await h.store.insertRunFlowResult({
       runId: "run_0",
@@ -241,7 +262,7 @@ describe("orchestrateRun", () => {
 
     await orchestrateRun(h.deps, "run_1");
 
-    expect(h.enqueued).toEqual(["run_1-flw_rip-head"]);
+    expect(h.enqueued.filter((j) => j.includes("-base-m"))).toHaveLength(0);
     const copied = h.store.runFlowResults.filter((r) => r.runId === "run_1" && r.target === "base");
     expect(copied).toHaveLength(1);
     expect(copied[0]!.fromCache).toBe(true);
@@ -370,7 +391,7 @@ describe("orchestrateRun — credentials & personas", () => {
     const h = personaHarness(true);
     await orchestrateRun(h.deps, "run_1");
     expect(h.jobs.length).toBeGreaterThan(0);
-    const headBundle = h.jobs.find((j) => j.jobId.endsWith("-head"))!.bundle as {
+    const headBundle = h.jobs.find((j) => j.jobId.endsWith("-head-m1"))!.bundle as {
       persona: { name: string; usernameRef: string } | null;
       secretRefs: Record<string, string>;
     };
@@ -390,5 +411,146 @@ describe("orchestrateRun — credentials & personas", () => {
     expect(comment).toContain("PR-scoped credentials");
     expect(comment).toContain("/flowguard rerun");
     expect(comment).toContain("http://localhost:3100/projects/prj_1?pr=7");
+  });
+});
+
+// ── Phase 8: diff-aware selection + coverage maps ──────────────────────────
+describe("orchestrateRun — diff-aware selection", () => {
+  const twoFlows = [
+    { flowId: "flw_login", flowName: "Login", specVersionId: "fsv_login", tier: "smoke" },
+    { flowId: "flw_rip", flowName: "Rip", specVersionId: "fsv_1" },
+  ];
+  const bothResults = (target: "head" | "base") => ({
+    flw_login: { ...result(target, "passed"), flowId: "flw_login" },
+    flw_rip: result(target, "passed"),
+  });
+
+  it("README-only diff: smoke runs, covered flow is ⚪ skipped with reasons in the comment", async () => {
+    const h = makeHarness({
+      flows: twoFlows,
+      headResults: bothResults("head"),
+      baseResults: bothResults("base"),
+      changedFiles: ["README.md"],
+    });
+    h.store.coverageMapRows.push({ flowId: "flw_rip", branch: "main", sha: "old", files: ["src/rip.ts"], apiRoutes: [] });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued.filter((j) => j.includes("flw_rip"))).toHaveLength(0);
+    expect(h.enqueued.filter((j) => j.includes("flw_login-head"))).toHaveLength(2);
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain("| Rip | ⚪ skipped | no overlap with the diff |");
+    expect(comment).toContain("flows selected 1/2 (diff-aware)");
+    expect(comment).toContain("Login: smoke tier");
+    const plan = h.store.runPatches.find((p) => p.runId === "run_1" && p.patch.plan)!.patch
+      .plan as { skipped: Array<{ flowId: string; reason: string }> };
+    expect(plan.skipped[0]!.flowId).toBe("flw_rip");
+  });
+
+  it("diff touching a covered file selects the flow with the file named as reason", async () => {
+    const h = makeHarness({
+      flows: twoFlows,
+      headResults: bothResults("head"),
+      baseResults: bothResults("base"),
+      changedFiles: ["src/components/PackScene.tsx"],
+    });
+    h.store.coverageMapRows.push({
+      flowId: "flw_rip",
+      branch: "main",
+      sha: "old",
+      files: ["src/components/PackScene.tsx", "src/app/shop/page.tsx", "src/a.ts", "src/b.ts", "src/c.ts"],
+      apiRoutes: [],
+    });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued.filter((j) => j.includes("flw_rip-head"))).toHaveLength(2);
+    expect(h.octo.comments[0]!.body).toContain("Rip: touches src/components/PackScene.tsx");
+  });
+
+  it("lockfile diff fans out: everything runs even with zero coverage overlap", async () => {
+    const h = makeHarness({
+      flows: twoFlows,
+      headResults: bothResults("head"),
+      baseResults: bothResults("base"),
+      changedFiles: ["pnpm-lock.yaml"],
+    });
+    h.store.coverageMapRows.push({ flowId: "flw_rip", branch: "main", sha: "old", files: ["src/rip.ts"], apiRoutes: [] });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued.filter((j) => j.includes("flw_rip-head"))).toHaveLength(2);
+    expect(h.octo.comments[0]!.body).toContain("fan-out: shared config changed: pnpm-lock.yaml");
+  });
+
+  it("nothing selected: no jobs, all-⚪ comment, green status, run done", async () => {
+    const h = makeHarness({
+      flows: [{ flowId: "flw_rip", flowName: "Rip", specVersionId: "fsv_1" }],
+      changedFiles: ["README.md"],
+    });
+    h.store.coverageMapRows.push({ flowId: "flw_rip", branch: "main", sha: "old", files: ["src/rip.ts"], apiRoutes: [] });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued).toHaveLength(0);
+    expect(h.octo.comments[0]!.body).toContain("| Rip | ⚪ skipped |");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "success" });
+    expect(h.store.runs[0]!.state).toBe("done");
+  });
+
+  it("fresh base results write coverage_maps with rootDir-prefixed repo paths", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: {
+        flw_rip: result("base", "passed", {
+          coverage: { files: ["src/components/PackScene.tsx"], apiRoutes: ["/api/packs/open"], sourceMapsResolved: true },
+        }),
+      },
+      changedFiles: ["examples/demo-app/src/anything.ts"],
+    });
+    h.store.projects[0]!.settings = { rootDir: "examples/demo-app" };
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.store.coverageMapRows).toEqual([
+      expect.objectContaining({
+        flowId: "flw_rip",
+        branch: "main",
+        sha: "mergebase",
+        files: ["examples/demo-app/src/components/PackScene.tsx"],
+        apiRoutes: ["/api/packs/open"],
+      }),
+    ]);
+  });
+
+  it("coverage seeding: base cache hit is bypassed until a coverage row exists; base m1 collects", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+      changedFiles: ["README.md"], // no coverage row → cold start selects the flow anyway
+    });
+    const cachedId = await h.store.insertRunFlowResult({
+      runId: "run_0",
+      flowId: "flw_rip",
+      specVersionId: "fsv_1",
+      target: "base",
+      result: result("base", "passed"),
+      fromCache: false,
+    });
+    await h.store.upsertBaseCache("fsv_1", "mergebase", cachedId);
+    const jobs: Array<{ jobId: string; coverage: boolean }> = [];
+    const orig = h.deps.enqueueFlowJob;
+    h.deps.enqueueFlowJob = async (job, jobId) => {
+      jobs.push({ jobId, coverage: job.collect.coverage });
+      await orig(job, jobId);
+    };
+
+    await orchestrateRun(h.deps, "run_1");
+
+    // cache was bypassed: base jobs ran despite the warm cache
+    expect(jobs.filter((j) => j.jobId.includes("-base-m"))).toHaveLength(2);
+    expect(jobs.find((j) => j.jobId.endsWith("-base-m1"))!.coverage).toBe(true);
+    expect(jobs.find((j) => j.jobId.endsWith("-base-m2"))!.coverage).toBe(false);
+    expect(jobs.find((j) => j.jobId.endsWith("-head-m1"))!.coverage).toBe(false);
   });
 });

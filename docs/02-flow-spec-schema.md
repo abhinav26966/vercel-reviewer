@@ -187,7 +187,8 @@ The post-merge base run (doc 05 §5) is the only path from `pending` → `offici
   "steps": [ { "id": "s1", "durationMs": 640, "settleMs": 210, "network": [...], "screenshot": "…", "assertions": [ {"kind":"dom","pass":true} ] } ],
   "perf": { "flowTotalMs": 9400, "regressions": [ { "stepId": "s2", "baseMs": 210, "headMs": 1900, "attribution": { "kind": "network", "request": "POST /api/packs/buy", "baseTtfb": 84, "headTtfb": 1720 } } ] },
   "artifacts": { "video": "s3://…", "trace": "s3://…", "har": "s3://…", "console": "s3://…", "coverage": "s3://…" },
-  "diagnostics": { "pendingRequestsAtTimeout": [], "consoleErrors": [], "pageCrashed": false, "nextErrorOverlay": false, "blankScreenScore": 0.02 }
+  "diagnostics": { "pendingRequestsAtTimeout": [], "consoleErrors": [], "pageCrashed": false, "nextErrorOverlay": false, "blankScreenScore": 0.02, "failureDetail": null },
+  "coverage": { "files": ["src/components/PackScene.tsx"], "apiRoutes": ["/api/packs/buy"], "sourceMapsResolved": true }
 }
 ```
 
