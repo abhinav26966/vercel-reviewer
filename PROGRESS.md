@@ -2,7 +2,60 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 6 — Compiler (recording → Flow Spec) — ✅ AC PASSED (2026-07-08)**; next up: Phase 7 — Perf gates + hang/blank/dead
+## Current phase: **Phase 7 — Perf gates + hang/blank/dead classification — ✅ AC PASSED (2026-07-09)**; next up: Phase 8 — Diff-aware selection + coverage maps
+
+### Phase 7 AC evidence (live, PR #5 `test/phase7-spectrum`, one PR / sequential chaos pushes)
+
+- (a) **Slow → 🟡 with attribution** (`7c11183`, unconditional 1.8s sleep in
+  `/api/packs/buy`): `Buy & Rip Open a Pack 🟡 slower — step s1 "Click Buy Pack":
+  727ms → 2.6s — \`POST /api/packs/buy\` TTFB 247ms→2.1s`.
+- (b) **Break → 🟠 hung naming the request** (`dfd253d`, `/api/packs/open`
+  returns 500): `🟠 hung — stuck at step s4 "Rip open the pack": text "1" !~ /^0$/
+  · \`POST /api/packs/open\` → 500` (needed the strengthened rip spec
+  `fsv_f7n36kdlrjl0hv` whose s4 asserts packs-remaining ^0$ — promoted official
+  after validating green).
+- (c) **Dead → 🟠 dead** (`9d61117`, client-side crash in OpenClient useEffect →
+  production "Application error" page): `🟠 dead` at s4, classified via
+  crash signals even though the surface failure was a missed canvas locator.
+- (d) **Revert → ✅** (`da7eb2d`, net PR diff = zero): Login ✅ 2.1s,
+  Buy & Rip ✅ 7.0s — perf gate correctly silent on identical code.
+- (e) **Flake soak (sacred)**: 20 consecutive re-orchestrations of the unchanged
+  run — zero 🟡/🔴/🟠. `apps/api/scripts/soak.ts` (~25s/iteration; deviation:
+  doc 09 runs this in CI, which lands in Phase 13).
+
+Built: runner classify.ts (dead: crash > Next error overlay > blank-screen
+pixel score > pageerrors; hung: pending-request naming / 5xx-then-no-state /
+bare settle timeout), settle() timeout signal + per-step pageerror deltas,
+orchestrator warm-up jobs (discarded) + 2 measured samples merged by median
+(sample 1 authoritative for pass/fail), dual-threshold perf gate
+(relativeFactor 3.0 AND absoluteFloorMs 500) with MANDATORY attribution
+(network TTFB growth ≥40% of delta, else client settle delta, else SUPPRESS),
+perf_baselines upserts, hung/dead verdicts gated by base-side green (honesty
+rule), diagnostics.failureDetail → verdict copy. 19 new tests (187 total).
+
+### Phase 7 lessons
+
+- **A dead page surfaces as a missed locator** — the crashed /open page made s4
+  fail as locator_miss, not assertion. Dead signals (crash/overlay/blank/
+  pageerror) now override ANY failure class; hung signals still require an
+  awaited post-condition.
+- **The chaos branch polluted the running services** (again): `git add -A` swept
+  uncommitted Phase 7 code into the branch commit, and checking main out
+  reverted the tsx-watch api mid-test. Test branches are now edited in a
+  separate `git worktree`; recovery = `git checkout <commit> -- apps packages`.
+- Force-push and direct main-push are blocked by the local permission
+  classifier — branch cleanup done via follow-up revert commits (PR three-dot
+  diff shows net change); **main is NOT pushed to origin yet** (see below).
+- s2 asserts only `pathMatches ^/inventory$` — a blank inventory page would sail
+  through it. Blank-page chaos had to target a page the flow actually asserts
+  on (/open). Recorded specs need at least one DOM assertion per page visited
+  to be blank-proof (authoring-guidance item for Phase 12).
+
+### ⚠️ Pending push
+
+Local main is ahead of origin/main (Phase 7 commits `906983f`, `f56a874`,
+`e003d97` + PROGRESS/doc updates). `git push origin main` was denied by the
+permission classifier — founder should run it (or approve when asked).
 
 ### Phase 6 AC evidence
 
@@ -309,11 +362,9 @@ skip, awaiting-run upgrade, multi-project filter). Live path needs founder actio
 
 ## Next session
 
-- **Phase 7 — Perf gates + hang/blank/dead classification** (doc 09, doc 04 §4):
-  warm-up run per target (timings discarded), measured medians (n=2),
-  dual-threshold gate + mandatory network/client attribution before any 🟡,
-  hang classifier (pending requests / 5xx+spinner), dead classifier (crash,
-  pageerror, Next error overlay, blank-screen pixel score + vision confirm),
-  base cross-check rule, perf baseline writes. AC includes the sacred
-  20-run zero-flake soak.
+- **Phase 8 — Diff-aware selection + coverage maps** (doc 09): map changed files/routes to
+  flows so PRs only run affected flows (PR #5 comments noted "diff-aware
+  selection lands in Phase 8"); everything else runs on a schedule/rollup.
+- First: push local main to origin (blocked by permission classifier this
+  session — see "Pending push" in Phase 7 section).
 - No new founder resources needed.
