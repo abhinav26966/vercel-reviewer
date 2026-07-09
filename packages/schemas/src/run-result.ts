@@ -94,6 +94,8 @@ export const RunDiagnosticsSchema = z.object({
   nextErrorOverlay: z.boolean().default(false),
   /** Fraction of near-uniform pixels in the settle screenshot (doc 04 §4 "Dead"). */
   blankScreenScore: z.number().min(0).max(1).default(0),
+  /** Human phrase from the hung/dead classifier, e.g. "Next.js error overlay present". */
+  failureDetail: z.string().nullable().default(null),
 });
 
 export const HealAttemptSchema = z.object({

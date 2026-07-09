@@ -434,6 +434,7 @@ function syntheticLoginFailure(
       pageCrashed: false,
       nextErrorOverlay: false,
       blankScreenScore: 0,
+      failureDetail: null,
     },
   };
 }

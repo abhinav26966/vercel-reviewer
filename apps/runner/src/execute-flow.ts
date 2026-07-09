@@ -292,7 +292,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           pageCrashed,
           nextErrorOverlay,
           blankScreenScore: blankScore,
-          ...(failureDetail ? {} : {}),
+          failureDetail,
         },
       }),
     );

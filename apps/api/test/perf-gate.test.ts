@@ -132,11 +132,17 @@ describe("compareFlow perf verdicts", () => {
       status: "dead",
       failedStepId: "s1",
       failureClass: "blank_screen",
+      diagnostics: { failureDetail: "blank screen (uniformity 99.4%)" },
     });
-    expect(
-      compareFlow({ spec, head: dead, base: result({ durationMs: 200, target: "base" }), baseAvailable: true, link })
-        .verdict,
-    ).toBe("dead");
+    const c = compareFlow({
+      spec,
+      head: dead,
+      base: result({ durationMs: 200, target: "base" }),
+      baseAvailable: true,
+      link,
+    });
+    expect(c.verdict).toBe("dead");
+    expect(c.detail).toContain('page died at step s1 "Buy a pack": blank screen (uniformity 99.4%)');
   });
 
   it("hung on head + hung on base → ⬜ (the honesty rule)", () => {

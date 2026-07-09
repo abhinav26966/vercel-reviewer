@@ -195,6 +195,8 @@ export function describeFailure(spec: FlowSpec, head: RunFlowResult, link: Artif
   const parts: string[] = [];
   if (head.failureClass === "locator_miss") {
     parts.push(`${title}: element not found (all locators missed)`);
+  } else if (head.status === "dead") {
+    parts.push(`page died at ${title}: ${head.diagnostics.failureDetail ?? "crash"}`);
   } else {
     const failedAssertion = stepResult?.assertions.find((a) => !a.pass);
     parts.push(`stuck at ${title}: ${failedAssertion?.message ?? head.failureClass ?? "failed"}`);
