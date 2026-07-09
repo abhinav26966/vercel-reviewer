@@ -137,10 +137,12 @@ export async function handleDeploymentStatus(deps: HandlerDeps, payload: Deploym
       headDeploymentId: deployment.id,
       branch: baseBranch,
     });
-    logger.info(
-      { run: run.id, branch: baseBranch, sha, created },
-      "base run created (no-op body in Phase 1)",
-    );
+    if (!created) {
+      // a redeploy of the same sha re-runs the suite (env vars may have changed)
+      await store.updateRun(run.id, { state: "planning" });
+    }
+    if (deps.enqueueBaseRun) await deps.enqueueBaseRun(run.id);
+    logger.info({ run: run.id, branch: baseBranch, sha, created }, "base run queued");
     return;
   }
 

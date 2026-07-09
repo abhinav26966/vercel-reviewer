@@ -22,6 +22,8 @@ export interface HandlerDeps {
   verifyDeploymentProject?: DeploymentProjectVerifier;
   /** Hand a planning run to the orchestrator (Phase 3). Absent in Phase-1-style tests. */
   enqueueOrchestration?: (runId: string) => Promise<void>;
+  /** Base-run pipeline trigger (doc 05 §5); wired from Phase 10 on. */
+  enqueueBaseRun?: (runId: string) => Promise<void>;
 }
 
 export function splitRepo(fullName: string): { owner: string; repo: string } {

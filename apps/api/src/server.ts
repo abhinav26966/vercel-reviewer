@@ -14,6 +14,8 @@ import { loadEnv } from "./env.js";
 import { encryptSecret } from "@flowguard/shared";
 import { artifactLinkBuilder, signArtifactKey, verifyArtifactSig } from "./orchestrator/artifact-links.js";
 import { orchestrateRun, type OrchestratorDeps } from "./orchestrator/orchestrate.js";
+import { orchestrateBaseRun } from "./orchestrator/base-run.js";
+import { nightlyBaseRuns, purgeExpired, startBaseRun, sweepStuckRuns } from "./orchestrator/scheduler.js";
 import { createQueues } from "./orchestrator/queue.js";
 import { DrizzleStore } from "./store.js";
 
@@ -72,10 +74,23 @@ const getRecordingObject = async (key: string): Promise<Buffer> => {
   return Buffer.from(await res.Body!.transformToByteArray());
 };
 
+const schedulerDeps = {
+  ...orchestratorDeps,
+  enqueueBaseRun: (runId: string) => queues.enqueueControl({ kind: "base-run", runId }),
+};
+
 queues.startOrchestrateWorker(async (job) => {
   switch (job.kind) {
     case "run":
       return orchestrateRun(orchestratorDeps, job.runId);
+    case "base-run":
+      return orchestrateBaseRun(orchestratorDeps, job.runId);
+    case "nightly":
+      return nightlyBaseRuns(schedulerDeps);
+    case "sweep":
+      return void (await sweepStuckRuns(schedulerDeps));
+    case "purge":
+      return purgeExpired(schedulerDeps);
     case "compile":
       await compileRecording(
         { store, inference, getObject: getRecordingObject, logger: createLogger({ name: "compiler", level: env.LOG_LEVEL }) },
@@ -137,11 +152,13 @@ const app = buildApp({
       last4: kind === "password" ? null : plaintext.slice(-4),
     });
   },
+  startBaseRun: (projectId, branch) => startBaseRun(schedulerDeps, projectId, branch),
   deps: {
     store,
     githubApp,
     logger,
     enqueueOrchestration: queues.enqueueOrchestration,
+    enqueueBaseRun: schedulerDeps.enqueueBaseRun,
     verifyDeploymentProject: async ({ deploymentUrl, vercelProjectId, vercelTeamId, vercelTokenRef }) => {
       try {
         const token = await resolveSecret(vercelTokenRef);
@@ -157,7 +174,10 @@ const app = buildApp({
 
 app
   .listen({ port: env.PORT, host: "0.0.0.0" })
-  .then((address) => logger.info({ address }, "flowguard api listening"))
+  .then(async (address) => {
+    await queues.registerSchedules().catch((err) => logger.warn({ err }, "schedule registration failed"));
+    logger.info({ address }, "flowguard api listening");
+  })
   .catch((err) => {
     logger.error(err);
     process.exit(1);

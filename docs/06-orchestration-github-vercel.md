@@ -57,6 +57,8 @@ Coverage maps refresh on every full base run (doc 04 §7, 05 §5); staleness bou
 
 Cron worker: nightly full base run per configured branch per project (skip if a base run already happened in the last 12h); daily purge of expired artifacts (retention configurable, default 30 days, keep failure bundles 90); hourly sweep for stuck runs (executing > 45min → error + alert).
 
+Phase 10 implementation notes: the nightly resolver targets the Vercel *production* deployment, which is the primary base branch — additional base branches are covered by the `deployment_status` trigger until the Vercel client learns branch-filtered listing. Artifact purge is delegated to S3 lifecycle rules (a `purgeArtifacts` hook exists for object-store backends without lifecycle support); the daily job purges expired PR-scoped credential sets.
+
 ## 7. Env-issue reporting (never blame the PR for the world)
 
 Classified `env_issue` (🟣), with actionable copy, when: deployment URL unreachable/bypass rejected (check secret configured?); login failed on head with project defaults (→ "PR may use a separate DB branch — provide PR-scoped credentials [link], then comment `/flowguard rerun`"); payment env unverified (doc 07 §5); webhook-dependent state gap (doc 05 §3.5); base deployment could not be resolved (report which comparison was skipped, still run head with assertion-only mode — assertions don't need a base, comparisons do).

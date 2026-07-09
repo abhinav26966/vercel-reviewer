@@ -2,7 +2,34 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 9 — Judge, intent, heal, 🔵 loop — ✅ AC PASSED (2026-07-09)**; next up: Phase 10 — Base-branch lifecycle
+## Current phase: **Phase 10 — Base-branch lifecycle — code complete (2026-07-09), live AC starts when founder merges PR #13**
+
+### Phase 10 state
+
+Implementation complete, all gates green (148 api tests, ~230 total).
+Built: base-run.ts (full-suite, never diff-selected; warmup + median-of-2 +
+coverage; reconciliation per doc 05 §5 — promote / conflict-hold / quarantine
+/ auto-unquarantine / refresh; newest pending wins, stale pendings archived
+on promote), PR-side ⬜ for quarantined flows WITHOUT executing,
+deployment_status → base-run trigger (same-sha redeploys re-run: env chaos),
+manual POST /projects/:id/base-run + dashboard button, alerts (store +
+endpoints + panel + optional settings.alertWebhookUrl Slack webhook),
+scheduler (nightly 03:00 with 12h skip, hourly stuck-run sweep, daily expiry
+purge; artifact retention delegated to S3 lifecycle with a purge hook),
+per-branch serialization + newest-wins. demo-app: BREAK_RIP env chaos +
+the shop refactor the Phase 9 healed pending version expects.
+
+**Live AC plan (after PR #13 merges):**
+1. The merge deploys production with "Buy a Pack" → deployment_status fires a
+   base run → official rip spec RED, newest pending (fsv_m7z1mc9ldn2r6s,
+   healed locator) GREEN → **promotion**; stale pending fsv_px6hlx9ocbezq1
+   archived. Verify: version statuses + run plan.reconciliation.
+2. Open a trivial PR → rip flow runs with the PROMOTED spec → ✅ no false 🔴.
+3. Set BREAK_RIP=1 on Vercel Production env + redeploy → base run → rip RED →
+   base_broken alert + quarantine. Open innocent PR → ⬜ without executing.
+4. Remove BREAK_RIP + redeploy → base green → auto-unquarantine +
+   base_recovered alert. (If `vercel redeploy` doesn't emit a GitHub
+   deployment_status, use the manual base-run endpoint — same pipeline.)
 
 ### Phase 9 AC evidence (live, PRs #9/#10/#11)
 

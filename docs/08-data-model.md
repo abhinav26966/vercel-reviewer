@@ -24,7 +24,8 @@ CREATE TABLE projects (
   settings jsonb NOT NULL DEFAULT '{}'          -- {runnerConcurrency, measureSamples, agentHealEnabled,
                                                 --  perfDefaults{relativeFactor,absoluteFloorMs},
                                                 --  fanoutGlobs[], authPathGlobs[], artifactRetentionDays,
-                                                --  rootDir (Vercel Root Directory, maps coverage paths → repo paths)}
+                                                --  rootDir (Vercel Root Directory, maps coverage paths → repo paths),
+                                                --  alertWebhookUrl (Slack-compatible; doc 05 §5.3)}
 );
 
 -- ═══ Secrets (envelope-encrypted) ═════════════════════════════════════

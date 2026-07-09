@@ -41,6 +41,8 @@ export interface AppConfig {
     /** Plain-language authoring (doc 03 B3): description → draft spec. */
     draftFromDescription?: (projectId: string, name: string, description: string) => Promise<{ flowId: string; versionId: string }>;
   };
+  /** Manual base-run trigger (doc 05 §5); Phase 10. */
+  startBaseRun?: (projectId: string, branch: string) => Promise<string | null>;
 }
 
 export type ApiApp = ReturnType<typeof buildApp>;
@@ -243,6 +245,39 @@ export function buildApp(config: AppConfig) {
   app.get("/api/projects/:id/flows", async (req) => {
     const { id } = req.params as { id: string };
     return store().listFlows(id);
+  });
+
+  // ── base-branch lifecycle (doc 05 §5): manual trigger + alerts ──
+  app.post("/api/projects/:id/base-run", async (req, reply) => {
+    if (!config.startBaseRun) return reply.code(500).send({ error: "base runs not configured" });
+    const { id } = req.params as { id: string };
+    let body: { branch?: string };
+    try {
+      body = JSON.parse((req.body as string) || "{}") as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    const runId = await config.startBaseRun(id, body.branch ?? "main");
+    if (!runId) return reply.code(409).send({ error: "no READY deployment for that branch" });
+    return reply.code(202).send({ ok: true, runId });
+  });
+
+  app.get("/api/projects/:id/alerts", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listAlerts(id);
+  });
+
+  app.post("/api/projects/:id/alerts/ack", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    let body: { kind?: string; flowId?: string };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (!body.kind) return reply.code(400).send({ error: "kind required" });
+    await store().acknowledgeAlerts(id, body.kind, body.flowId);
+    return { ok: true };
   });
 
   // ── the 🔵 loop (doc 05 §3.6): approve → pending version; reject → 🔴 ──
