@@ -16,6 +16,11 @@ export const ProjectSettingsSchema = z.object({
     .prefault({}),
   fanoutGlobs: z.array(z.string()).default([]),
   authPathGlobs: z.array(z.string()).default([]),
+  /**
+   * App root within the repo (Vercel "Root Directory", e.g. "examples/demo-app";
+   * "" = repo root). Maps coverage source paths to repo-relative diff paths.
+   */
+  rootDir: z.string().default(""),
   artifactRetentionDays: z.number().int().positive().default(30),
 });
 

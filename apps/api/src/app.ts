@@ -239,6 +239,22 @@ export function buildApp(config: AppConfig) {
     return store().listDraftVersions(id);
   });
 
+  app.get("/api/projects/:id/flows", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listFlows(id);
+  });
+
+  // smoke-tier toggle (doc 06 §4.2) — smoke flows run on every push regardless of diff
+  app.patch("/api/flows/:id/tier", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { tier?: string };
+    if (body.tier !== "smoke" && body.tier !== "standard") {
+      return reply.code(400).send({ error: 'tier must be "smoke" or "standard"' });
+    }
+    await store().setFlowTier(id, body.tier);
+    return { ok: true, flowId: id, tier: body.tier };
+  });
+
   app.get("/api/drafts/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     const version = await store().getFlowVersion(id);

@@ -23,7 +23,8 @@ CREATE TABLE projects (
   base_branches text[] NOT NULL DEFAULT '{main}',
   settings jsonb NOT NULL DEFAULT '{}'          -- {runnerConcurrency, measureSamples, agentHealEnabled,
                                                 --  perfDefaults{relativeFactor,absoluteFloorMs},
-                                                --  fanoutGlobs[], authPathGlobs[], artifactRetentionDays}
+                                                --  fanoutGlobs[], authPathGlobs[], artifactRetentionDays,
+                                                --  rootDir (Vercel Root Directory, maps coverage paths → repo paths)}
 );
 
 -- ═══ Secrets (envelope-encrypted) ═════════════════════════════════════

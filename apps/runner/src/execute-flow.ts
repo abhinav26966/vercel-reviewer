@@ -12,6 +12,7 @@ import { NetworkTracker } from "./network-tracker.js";
 import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
 import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
+import { collectCoverage, startCoverage } from "./coverage.js";
 import { gotoWithRetry, runStepOnce, type SecretLookup, type StepFailure } from "./steps.js";
 import type { ExecuteFlowJob, FlowStep, RunFlowResult, StepAssertionResult, StepResult } from "./types.js";
 
@@ -63,6 +64,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
   let nextErrorOverlay = false;
   let blankScore = 0;
   let failureClassOverride: string | null = null;
+  let coverage: RunFlowResult["coverage"] = null;
   const flowStart = Date.now();
   const tracker = new NetworkTracker();
 
@@ -115,6 +117,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
 
     const page = await context.newPage();
     tracker.attach(page);
+    let coverageStarted = false;
+    if (job.collect.coverage) {
+      coverageStarted = await startCoverage(page, logger);
+    }
     page.on("console", (msg) => {
       const line = { ts: Date.now() - flowStart, text: `[${msg.type()}] ${msg.text()}` };
       consoleLines.push(line);
@@ -225,6 +231,14 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       if (collectTrace) await context.tracing.stop({ path: tracePath }).catch(() => {});
       const page2 = context.pages()[0];
       const video = page2?.video();
+      if (coverageStarted && page2) {
+        coverage = await collectCoverage(
+          page2,
+          tracker.window(0, Date.now()),
+          job.target.deploymentUrl,
+          logger,
+        ).catch(() => null);
+      }
       await context.close();
       context = null;
       const put = async (name: string, fn: () => Promise<string>) => {
@@ -254,6 +268,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           "application/json",
         ),
       );
+      if (coverage) {
+        const cov = coverage;
+        await put("coverage", () =>
+          artifacts.putBuffer(artifactKey(job, "coverage.json"), JSON.stringify(cov, null, 2), "application/json"),
+        );
+      }
     }
 
     return finalize(outcome, failedStepId, failure);
@@ -294,6 +314,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           blankScreenScore: blankScore,
           failureDetail,
         },
+        coverage,
       }),
     );
   }

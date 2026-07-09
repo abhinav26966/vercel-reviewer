@@ -272,6 +272,32 @@ export class FakeStore implements Store {
     this.perfBaselineRows.push(input);
   }
 
+  coverageMapRows: Array<{ flowId: string; branch: string; sha: string; files: string[]; apiRoutes: string[] }> = [];
+
+  async getLatestCoverageMap(flowId: string, branch: string) {
+    const rows = this.coverageMapRows.filter((r) => r.flowId === flowId && r.branch === branch);
+    const last = rows[rows.length - 1];
+    return last ? { sha: last.sha, files: last.files, apiRoutes: last.apiRoutes } : null;
+  }
+
+  async upsertCoverageMap(input: { flowId: string; branch: string; sha: string; files: string[]; apiRoutes: string[] }) {
+    this.coverageMapRows = this.coverageMapRows.filter(
+      (r) => !(r.flowId === input.flowId && r.branch === input.branch && r.sha === input.sha),
+    );
+    this.coverageMapRows.push(input);
+  }
+
+  async setFlowTier(flowId: string, tier: "smoke" | "standard") {
+    const f = this.officialFlows.find((x) => x.flowId === flowId);
+    if (f) f.tier = tier;
+  }
+
+  async listFlows(projectId: string) {
+    return this.officialFlows
+      .filter((f) => f.projectId === projectId)
+      .map((f) => ({ id: f.flowId, name: f.flowName, tier: f.tier, archived: false }));
+  }
+
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   recordings: Array<{
     id: string;

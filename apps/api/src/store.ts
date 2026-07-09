@@ -2,6 +2,7 @@ import { and, count, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
   baseResultCache,
+  coverageMaps,
   credentialSets,
   perfBaselines,
   deployments,
@@ -36,6 +37,8 @@ export interface ProjectRow {
   vercelTokenRef: string | null;
   vercelBypassSecretRef: string | null;
   baseBranches: string[];
+  /** projects.settings jsonb — validate with ProjectSettingsSchema at use sites. */
+  settings?: Record<string, unknown>;
 }
 
 export interface DeploymentRow {
@@ -189,6 +192,24 @@ export interface Store {
     medianMs: number;
     samples: number;
   }): Promise<void>;
+  /** Latest coverage row per (flow, branch) — the selection input (doc 08). */
+  getLatestCoverageMap(
+    flowId: string,
+    branch: string,
+  ): Promise<{ sha: string; files: string[]; apiRoutes: string[] } | null>;
+  upsertCoverageMap(input: {
+    flowId: string;
+    branch: string;
+    sha: string;
+    files: string[];
+    apiRoutes: string[];
+  }): Promise<void>;
+  /** Smoke-tier toggle (doc 06 §4.2). */
+  setFlowTier(flowId: string, tier: "smoke" | "standard"): Promise<void>;
+  /** Dashboard flow list (all flows incl. archived, with tier). */
+  listFlows(
+    projectId: string,
+  ): Promise<Array<{ id: string; name: string; tier: string; archived: boolean }>>;
 
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   createRecording(input: {
@@ -723,6 +744,56 @@ export class DrizzleStore implements Store {
     } else {
       await this.db.insert(perfBaselines).values({ id: newId("perfBaseline"), ...input });
     }
+  }
+
+  async getLatestCoverageMap(flowId: string, branch: string) {
+    const rows = await this.db
+      .select({ sha: coverageMaps.sha, files: coverageMaps.files, apiRoutes: coverageMaps.apiRoutes })
+      .from(coverageMaps)
+      .where(and(eq(coverageMaps.flowId, flowId), eq(coverageMaps.branch, branch)))
+      .orderBy(desc(coverageMaps.updatedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async upsertCoverageMap(input: {
+    flowId: string;
+    branch: string;
+    sha: string;
+    files: string[];
+    apiRoutes: string[];
+  }): Promise<void> {
+    const existing = await this.db
+      .select({ id: coverageMaps.id })
+      .from(coverageMaps)
+      .where(
+        and(
+          eq(coverageMaps.flowId, input.flowId),
+          eq(coverageMaps.branch, input.branch),
+          eq(coverageMaps.sha, input.sha),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      await this.db
+        .update(coverageMaps)
+        .set({ files: input.files, apiRoutes: input.apiRoutes, updatedAt: new Date() })
+        .where(eq(coverageMaps.id, existing[0].id));
+    } else {
+      await this.db.insert(coverageMaps).values({ id: newId("coverageMap"), ...input });
+    }
+  }
+
+  async setFlowTier(flowId: string, tier: "smoke" | "standard"): Promise<void> {
+    await this.db.update(flows).set({ tier }).where(eq(flows.id, flowId));
+  }
+
+  async listFlows(projectId: string) {
+    return this.db
+      .select({ id: flows.id, name: flows.name, tier: flows.tier, archived: flows.archived })
+      .from(flows)
+      .where(eq(flows.projectId, projectId))
+      .orderBy(flows.name);
   }
 
   async createRecording(input: {
