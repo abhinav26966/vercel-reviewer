@@ -63,7 +63,7 @@ export async function compileRecording(
     );
 
     // stages 2, 6, 7: hardening, delta rewriting, assembly
-    const flowId = newId("flow");
+    let flowId: string = newId("flow");
     const { spec, report } = assembleSpec({
       trace,
       events: normalized.events,
@@ -80,13 +80,21 @@ export async function compileRecording(
     });
     report.visionFailures = vision.failures;
 
-    await store.createFlow({
-      id: flowId,
-      projectId: recording.projectId,
-      name: spec.name,
-      tier: spec.tier,
-      persona: spec.persona,
-    });
+    // re-recording an existing flow attaches a new draft to it — validation
+    // promotion then archives the old official (doc 05 §4 lifecycle)
+    const existingFlow = await store.getFlowByName(recording.projectId, spec.name);
+    if (existingFlow) {
+      flowId = existingFlow.id;
+      spec.flowId = flowId;
+    } else {
+      await store.createFlow({
+        id: flowId,
+        projectId: recording.projectId,
+        name: spec.name,
+        tier: spec.tier,
+        persona: spec.persona,
+      });
+    }
     const versionId = await store.insertFlowVersion({
       flowId,
       spec,

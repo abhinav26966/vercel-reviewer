@@ -310,6 +310,13 @@ export class FakeStore implements Store {
     }
   }
 
+  async getFlowByName(projectId: string, name: string) {
+    const f =
+      this.flowRows.find((x) => x.projectId === projectId && x.name === name) ??
+      this.officialFlows.find((x) => x.projectId === projectId && x.flowName === name);
+    return f ? { id: "id" in f ? f.id : f.flowId } : null;
+  }
+
   async listFlows(projectId: string) {
     return this.officialFlows
       .filter((f) => f.projectId === projectId)

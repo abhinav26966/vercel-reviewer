@@ -314,6 +314,8 @@ export interface Store {
   setFlowTier(flowId: string, tier: "smoke" | "standard"): Promise<void>;
   /** After promoting one pending, retire its stale siblings (superseded approvals). */
   archiveOtherPendings(flowId: string, branch: string, exceptVersionId: string): Promise<void>;
+  /** Re-recordings attach to the existing flow by (project, name). */
+  getFlowByName(projectId: string, name: string): Promise<{ id: string } | null>;
   /** Dashboard flow list (all flows incl. archived, with tier). */
   listFlows(
     projectId: string,
@@ -911,6 +913,15 @@ export class DrizzleStore implements Store {
           ne(flowSpecVersions.id, exceptVersionId),
         ),
       );
+  }
+
+  async getFlowByName(projectId: string, name: string) {
+    const rows = await this.db
+      .select({ id: flows.id })
+      .from(flows)
+      .where(and(eq(flows.projectId, projectId), eq(flows.name, name)))
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   async listFlows(projectId: string) {
