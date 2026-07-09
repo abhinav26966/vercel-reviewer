@@ -14,6 +14,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "rip service exploded (chaos flag)" }, { status: 500 });
   }
 
+  // Env chaos: BREAK_RIP=1 breaks this route deployment-wide — lets base-branch
+  // breakage be simulated via an env flip + redeploy, no merge required.
+  if (process.env.BREAK_RIP === "1") {
+    return NextResponse.json({ error: "rip service exploded (env chaos)" }, { status: 500 });
+  }
+
   if (session.packs < 1) {
     return NextResponse.json({ error: "no unopened packs" }, { status: 400 });
   }

@@ -8,8 +8,12 @@ export const ORCHESTRATE_QUEUE = "orchestrate";
 
 export type ControlJob =
   | { kind: "run"; runId: string }
+  | { kind: "base-run"; runId: string }
   | { kind: "compile"; recordingId: string }
-  | { kind: "validate"; versionId: string };
+  | { kind: "validate"; versionId: string }
+  | { kind: "nightly" }
+  | { kind: "sweep" }
+  | { kind: "purge" };
 
 export interface QueueBundle {
   enqueueFlowJob: (job: ExecuteFlowJob, jobId: string) => Promise<void>;
@@ -18,6 +22,8 @@ export interface QueueBundle {
   setAbortKey: (runId: string) => Promise<void>;
   enqueueOrchestration: (runId: string) => Promise<void>;
   enqueueControl: (job: ControlJob) => Promise<void>;
+  /** Repeatable cron jobs (doc 06 §6): nightly base runs, hourly sweep, daily purge. */
+  registerSchedules: () => Promise<void>;
   startOrchestrateWorker: (handler: (job: ControlJob) => Promise<void>) => Worker;
   close: () => Promise<void>;
 }
@@ -74,6 +80,21 @@ export function createQueues(redisUrl: string, logger: Logger): QueueBundle {
         removeOnComplete: true,
         removeOnFail: { age: 3600 },
       });
+    },
+    async registerSchedules() {
+      const schedules: Array<{ job: ControlJob; pattern: string }> = [
+        { job: { kind: "nightly" }, pattern: "0 3 * * *" }, // nightly base runs
+        { job: { kind: "sweep" }, pattern: "0 * * * *" }, // hourly stuck-run sweep
+        { job: { kind: "purge" }, pattern: "30 4 * * *" }, // daily expiry purge
+      ];
+      for (const s of schedules) {
+        await orchestrateQueue.add("control", s.job, {
+          repeat: { pattern: s.pattern },
+          jobId: `sched-${s.job.kind}`,
+          removeOnComplete: true,
+          removeOnFail: { age: 3600 },
+        });
+      }
     },
     startOrchestrateWorker(handler) {
       const worker = new Worker(

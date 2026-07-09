@@ -414,6 +414,37 @@ describe("orchestrateRun — credentials & personas", () => {
   });
 });
 
+// ── Phase 10: quarantined flows on PRs ─────────────────────────────────────
+describe("orchestrateRun — quarantine (doc 05 §5.3)", () => {
+  it("quarantined flow renders ⬜ without executing; healthy flows run normally", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+      changedFiles: ["anything.ts"],
+    });
+    h.store.flowRows.push({ id: "flw_quar", projectId: "prj_1", name: "Quarantined Flow", tier: "standard", persona: null, archived: false });
+    h.store.versionRows.push({
+      id: "fsv_q",
+      flowId: "flw_quar",
+      spec: { ...spec, flowId: "flw_quar" },
+      status: "quarantined",
+      branch: "main",
+      source: "recording",
+      sourceRecordingId: null,
+      compilationReport: { quarantinedSha: "deadbeef123" },
+    });
+
+    await orchestrateRun(h.deps, "run_1");
+
+    expect(h.enqueued.filter((j) => j.includes("flw_quar"))).toHaveLength(0);
+    const comment = h.octo.comments[0]!.body;
+    expect(comment).toContain("| Quarantined Flow | ⬜ already broken on base |");
+    expect(comment).toContain("quarantined — broken on main since `deadbee`");
+    expect(comment).toContain("| Rip | ✅ passing |");
+    expect(h.octo.statuses.at(-1)).toMatchObject({ state: "success" });
+  });
+});
+
 // ── Phase 9: the intent judge in the run loop ──────────────────────────────
 describe("orchestrateRun — intent judge", () => {
   const blueOutput = {

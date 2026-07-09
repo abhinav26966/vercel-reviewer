@@ -115,7 +115,16 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
 
     // ── planning: all non-archived official flows, then diff-aware selection ──
     const allFlows = await store.listOfficialFlows(project.id, pr.baseBranch);
-    if (allFlows.length === 0) {
+    // quarantined flows render ⬜ without executing (doc 05 §5.3): the base is
+    // known-broken — never let a base regression burn innocent PR authors
+    const quarantined = await store.listQuarantinedFlows(project.id, pr.baseBranch);
+    const quarantinedRows: FlowReviewRow[] = quarantined.map((q) => ({
+      flowName: q.flowName,
+      emoji: VERDICT_EMOJI.already_broken_on_base,
+      label: VERDICT_LABEL.already_broken_on_base,
+      detail: `flow is quarantined — broken on ${pr.baseBranch}${q.quarantinedSha ? ` since \`${q.quarantinedSha.slice(0, 7)}\`` : ""}, not caused by this PR`,
+    }));
+    if (allFlows.length === 0 && quarantined.length === 0) {
       await sticky(renderPreviewDetectedComment({ previewUrl: headDeployment.url, sha: run.headSha }));
       await status("success", "preview detected — no flows configured yet");
       await store.updateRun(runId, { state: "done", finishedAt: new Date() });
@@ -195,7 +204,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           baseBranch: pr.baseBranch,
           mergeBaseSha,
           previewHost: headDeployment.url.replace(/^https?:\/\//, ""),
-          rows: skippedRows,
+          rows: [...quarantinedRows, ...skippedRows],
           runDetails: selectionDetails(selection.selected, selection.skipped.length, allFlows.length, selection.fanout, null),
         }),
       );
@@ -515,7 +524,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         baseBranch: pr.baseBranch,
         mergeBaseSha: baseDeployment ? mergeBaseSha : null,
         previewHost: headDeployment.url.replace(/^https?:\/\//, ""),
-        rows: [...rows, ...skippedRows],
+        rows: [...rows, ...quarantinedRows, ...skippedRows],
         runDetails: selectionDetails(
           selection.selected,
           selection.skipped.length,
@@ -569,7 +578,7 @@ function selectionDetails(
   return lines.join("\n");
 }
 
-function buildJob(
+export function buildJob(
   runId: string,
   f: { flowId: string; specVersionId: string; spec: ExecuteFlowJob["spec"] },
   target: "head" | "base",

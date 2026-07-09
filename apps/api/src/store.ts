@@ -1,6 +1,7 @@
 import { and, count, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
+  alerts,
   baseResultCache,
   coverageMaps,
   credentialSets,
@@ -161,6 +162,40 @@ export interface Store {
     projectId: string,
     branch: string,
   ): Promise<Array<{ flowId: string; flowName: string; tier: string; specVersionId: string; spec: FlowSpec }>>;
+  /**
+   * The base-run suite (doc 05 §5): every non-archived flow's current
+   * official-or-quarantined version plus its pending version when one exists.
+   */
+  listBaseSuite(
+    projectId: string,
+    branch: string,
+  ): Promise<
+    Array<{
+      flowId: string;
+      flowName: string;
+      tier: string;
+      official: { versionId: string; status: string; spec: FlowSpec };
+      pending: { versionId: string; spec: FlowSpec } | null;
+    }>
+  >;
+  /** Quarantined flows render ⬜ on PRs without executing (doc 05 §5.3). */
+  listQuarantinedFlows(
+    projectId: string,
+    branch: string,
+  ): Promise<Array<{ flowId: string; flowName: string; quarantinedSha: string | null }>>;
+  createAlert(input: { projectId: string; kind: string; payload: Record<string, unknown> }): Promise<string>;
+  listAlerts(projectId: string): Promise<
+    Array<{ id: string; kind: string; payload: Record<string, unknown>; createdAt: Date }>
+  >;
+  acknowledgeAlerts(projectId: string, kind: string, flowId?: string): Promise<void>;
+  /** Active base runs for (project, branch) created before the given run. */
+  listActiveBaseRuns(projectId: string, branch: string, beforeRunId: string): Promise<RunRow[]>;
+  /** Most recent base-run creation time for (project, branch); nightly skip rule. */
+  lastBaseRunAt(projectId: string, branch: string): Promise<Date | null>;
+  /** Runs stuck in an active state since before the cutoff (doc 06 §6 sweeper). */
+  listStuckRuns(cutoff: Date): Promise<RunRow[]>;
+  /** Expired PR-scoped credential sets purge (doc 06 §6); returns count. */
+  deleteExpiredPrCredentials(now: Date): Promise<number>;
   getCachedBaseResult(
     specVersionId: string,
     baseSha: string,
@@ -830,6 +865,152 @@ export class DrizzleStore implements Store {
       .from(flows)
       .where(eq(flows.projectId, projectId))
       .orderBy(flows.name);
+  }
+
+  async listBaseSuite(projectId: string, branch: string) {
+    const rows = await this.db
+      .select({
+        flowId: flows.id,
+        flowName: flows.name,
+        tier: flows.tier,
+        versionId: flowSpecVersions.id,
+        status: flowSpecVersions.status,
+        spec: flowSpecVersions.spec,
+      })
+      .from(flows)
+      .innerJoin(flowSpecVersions, eq(flowSpecVersions.flowId, flows.id))
+      .where(
+        and(
+          eq(flows.projectId, projectId),
+          eq(flows.archived, false),
+          eq(flowSpecVersions.branch, branch),
+          inArray(flowSpecVersions.status, ["official", "quarantined", "pending"]),
+        ),
+      );
+    const byFlow = new Map<string, (typeof rows)[number][]>();
+    for (const r of rows) {
+      byFlow.set(r.flowId, [...(byFlow.get(r.flowId) ?? []), r]);
+    }
+    const suite = [];
+    for (const versions of byFlow.values()) {
+      const official = versions.find((v) => v.status === "official" || v.status === "quarantined");
+      if (!official) continue;
+      const pending = versions.find((v) => v.status === "pending") ?? null;
+      suite.push({
+        flowId: official.flowId,
+        flowName: official.flowName,
+        tier: official.tier,
+        official: { versionId: official.versionId, status: official.status, spec: official.spec },
+        pending: pending ? { versionId: pending.versionId, spec: pending.spec } : null,
+      });
+    }
+    return suite;
+  }
+
+  async listQuarantinedFlows(projectId: string, branch: string) {
+    const rows = await this.db
+      .select({
+        flowId: flows.id,
+        flowName: flows.name,
+        report: flowSpecVersions.compilationReport,
+      })
+      .from(flows)
+      .innerJoin(flowSpecVersions, eq(flowSpecVersions.flowId, flows.id))
+      .where(
+        and(
+          eq(flows.projectId, projectId),
+          eq(flows.archived, false),
+          eq(flowSpecVersions.branch, branch),
+          eq(flowSpecVersions.status, "quarantined"),
+        ),
+      );
+    return rows.map((r) => ({
+      flowId: r.flowId,
+      flowName: r.flowName,
+      quarantinedSha: ((r.report as Record<string, unknown> | null)?.quarantinedSha as string) ?? null,
+    }));
+  }
+
+  async createAlert(input: { projectId: string; kind: string; payload: Record<string, unknown> }) {
+    const id = newId("alert");
+    await this.db.insert(alerts).values({ id, ...input });
+    return id;
+  }
+
+  async listAlerts(projectId: string) {
+    const rows = await this.db
+      .select({ id: alerts.id, kind: alerts.kind, payload: alerts.payload, createdAt: alerts.createdAt })
+      .from(alerts)
+      .where(and(eq(alerts.projectId, projectId), isNull(alerts.acknowledgedAt)))
+      .orderBy(desc(alerts.createdAt));
+    return rows;
+  }
+
+  async acknowledgeAlerts(projectId: string, kind: string, flowId?: string) {
+    const open = await this.db
+      .select({ id: alerts.id, payload: alerts.payload })
+      .from(alerts)
+      .where(and(eq(alerts.projectId, projectId), eq(alerts.kind, kind), isNull(alerts.acknowledgedAt)));
+    const ids = open
+      .filter((a) => !flowId || (a.payload as Record<string, unknown>).flowId === flowId)
+      .map((a) => a.id);
+    if (ids.length > 0) {
+      await this.db.update(alerts).set({ acknowledgedAt: new Date() }).where(inArray(alerts.id, ids));
+    }
+  }
+
+  async listActiveBaseRuns(projectId: string, branch: string, beforeRunId: string): Promise<RunRow[]> {
+    const active = ["planning", "resolving_base", "executing", "judging", "reporting"];
+    const selfRows = await this.db
+      .select({ createdAt: runs.createdAt })
+      .from(runs)
+      .where(eq(runs.id, beforeRunId))
+      .limit(1);
+    const selfCreatedAt = selfRows[0]?.createdAt;
+    const rows = await this.db
+      .select()
+      .from(runs)
+      .where(
+        and(
+          eq(runs.projectId, projectId),
+          eq(runs.kind, "base"),
+          eq(runs.branch, branch),
+          inArray(runs.state, active),
+          ne(runs.id, beforeRunId),
+          ...(selfCreatedAt ? [lt(runs.createdAt, selfCreatedAt)] : []),
+        ),
+      );
+    return rows as RunRow[];
+  }
+
+  async lastBaseRunAt(projectId: string, branch: string): Promise<Date | null> {
+    const rows = await this.db
+      .select({ createdAt: runs.createdAt })
+      .from(runs)
+      .where(and(eq(runs.projectId, projectId), eq(runs.kind, "base"), eq(runs.branch, branch)))
+      .orderBy(desc(runs.createdAt))
+      .limit(1);
+    return rows[0]?.createdAt ?? null;
+  }
+
+  async listStuckRuns(cutoff: Date): Promise<RunRow[]> {
+    const active = ["planning", "resolving_base", "executing", "judging", "reporting"];
+    const rows = await this.db
+      .select()
+      .from(runs)
+      .where(and(inArray(runs.state, active), lt(runs.updatedAt, cutoff)));
+    return rows as RunRow[];
+  }
+
+  async deleteExpiredPrCredentials(now: Date): Promise<number> {
+    const expired = await this.db
+      .select({ id: credentialSets.id })
+      .from(credentialSets)
+      .where(and(eq(credentialSets.scope, "pr"), lt(credentialSets.expiresAt, now)));
+    for (const row of expired) {
+      await this.db.delete(credentialSets).where(eq(credentialSets.id, row.id));
+    }
+    return expired.length;
   }
 
   async createRecording(input: {

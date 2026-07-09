@@ -531,6 +531,106 @@ export class FakeStore implements Store {
     return r ? { id: r.id, result: r.result } : null;
   }
 
+  alertRows: Array<{ id: string; projectId: string; kind: string; payload: Record<string, unknown>; acknowledgedAt: Date | null; createdAt: Date }> = [];
+
+  async listBaseSuite(projectId: string, branch: string) {
+    const flows = new Map<string, { flowId: string; flowName: string; tier: string }>();
+    for (const f of this.officialFlows.filter((x) => x.projectId === projectId && x.branch === branch)) {
+      flows.set(f.flowId, { flowId: f.flowId, flowName: f.flowName, tier: f.tier });
+    }
+    for (const v of this.versionRows) {
+      const f = this.flowRows.find((x) => x.id === v.flowId && x.projectId === projectId);
+      if (f && !f.archived) flows.set(f.id, { flowId: f.id, flowName: f.name, tier: f.tier });
+    }
+    const suite = [];
+    for (const f of flows.values()) {
+      const official =
+        this.versionRows.find(
+          (v) => v.flowId === f.flowId && v.branch === branch && ["official", "quarantined"].includes(v.status),
+        ) ??
+        (() => {
+          const o = this.officialFlows.find((x) => x.flowId === f.flowId && x.branch === branch);
+          return o ? { id: o.specVersionId, status: "official", spec: o.spec } : null;
+        })();
+      if (!official) continue;
+      const pending = this.versionRows.find((v) => v.flowId === f.flowId && v.branch === branch && v.status === "pending");
+      suite.push({
+        flowId: f.flowId,
+        flowName: f.flowName,
+        tier: f.tier,
+        official: { versionId: official.id, status: official.status, spec: official.spec },
+        pending: pending ? { versionId: pending.id, spec: pending.spec } : null,
+      });
+    }
+    return suite;
+  }
+
+  async listQuarantinedFlows(projectId: string, branch: string) {
+    return this.versionRows
+      .filter(
+        (v) =>
+          v.status === "quarantined" &&
+          v.branch === branch &&
+          (this.officialFlows.some((f) => f.flowId === v.flowId && f.projectId === projectId) ||
+            this.flowRows.some((f) => f.id === v.flowId && f.projectId === projectId)),
+      )
+      .map((v) => ({
+        flowId: v.flowId,
+        flowName:
+          this.officialFlows.find((f) => f.flowId === v.flowId)?.flowName ??
+          this.flowRows.find((f) => f.id === v.flowId)?.name ??
+          "?",
+        quarantinedSha: ((v.compilationReport ?? {}).quarantinedSha as string) ?? null,
+      }));
+  }
+
+  async createAlert(input: { projectId: string; kind: string; payload: Record<string, unknown> }) {
+    const id = this.id("alr");
+    this.alertRows.push({ id, ...input, acknowledgedAt: null, createdAt: new Date() });
+    return id;
+  }
+
+  async listAlerts(projectId: string) {
+    return this.alertRows
+      .filter((a) => a.projectId === projectId && !a.acknowledgedAt)
+      .map((a) => ({ id: a.id, kind: a.kind, payload: a.payload, createdAt: a.createdAt }));
+  }
+
+  async acknowledgeAlerts(projectId: string, kind: string, flowId?: string) {
+    for (const a of this.alertRows) {
+      if (a.projectId === projectId && a.kind === kind && !a.acknowledgedAt && (!flowId || a.payload.flowId === flowId)) {
+        a.acknowledgedAt = new Date();
+      }
+    }
+  }
+
+  async listActiveBaseRuns(projectId: string, branch: string, beforeRunId: string): Promise<RunRow[]> {
+    const active = ["planning", "resolving_base", "executing", "judging", "reporting"];
+    const idx = this.runs.findIndex((r) => r.id === beforeRunId);
+    return this.runs.filter(
+      (r, i) =>
+        r.projectId === projectId && r.kind === "base" && r.branch === branch && r.id !== beforeRunId && i < idx && active.includes(r.state),
+    );
+  }
+
+  lastBaseRunTimes = new Map<string, Date>(); // `${projectId}:${branch}`
+
+  async lastBaseRunAt(projectId: string, branch: string): Promise<Date | null> {
+    return this.lastBaseRunTimes.get(`${projectId}:${branch}`) ?? null;
+  }
+
+  stuckRuns: RunRow[] = [];
+
+  async listStuckRuns(): Promise<RunRow[]> {
+    return this.stuckRuns;
+  }
+
+  expiredCredentialCount = 0;
+
+  async deleteExpiredPrCredentials(): Promise<number> {
+    return this.expiredCredentialCount;
+  }
+
   async listHealPatches(projectId: string) {
     return this.runFlowResults
       .filter(

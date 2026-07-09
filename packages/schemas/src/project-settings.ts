@@ -21,6 +21,8 @@ export const ProjectSettingsSchema = z.object({
    * "" = repo root). Maps coverage source paths to repo-relative diff paths.
    */
   rootDir: z.string().default(""),
+  /** Optional Slack-compatible webhook for alerts (doc 05 §5.3). */
+  alertWebhookUrl: z.string().nullable().default(null),
   artifactRetentionDays: z.number().int().positive().default(30),
 });
 

@@ -58,12 +58,20 @@ interface HealPatch {
   patch: unknown;
 }
 
+interface AlertRow {
+  id: string;
+  kind: string;
+  payload: { flowName?: string; message?: string; flowId?: string };
+  createdAt: string;
+}
+
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [creds, setCreds] = useState<CredentialSet[]>([]);
   const [flows, setFlows] = useState<FlowRow[]>([]);
   const [awaiting, setAwaiting] = useState<AwaitingVerdict[]>([]);
   const [healPatches, setHealPatches] = useState<HealPatch[]>([]);
+  const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
@@ -81,6 +89,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     api<FlowRow[]>(`/api/projects/${id}/flows`).then(setFlows).catch(() => {});
     api<AwaitingVerdict[]>(`/api/projects/${id}/verdicts`).then(setAwaiting).catch(() => {});
     api<HealPatch[]>(`/api/projects/${id}/heal-patches`).then(setHealPatches).catch(() => {});
+    api<AlertRow[]>(`/api/projects/${id}/alerts`).then(setAlerts).catch(() => {});
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
     api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
     api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
@@ -191,6 +200,37 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           Save
         </button>
       </form>
+
+      {alerts.length > 0 ? (
+        <>
+          <h2>🚨 Alerts</h2>
+          <table>
+            <tbody>
+              {alerts.map((a) => (
+                <tr key={a.id}>
+                  <td>
+                    <span className="pill">{a.kind}</span> {a.payload.message ?? a.payload.flowName ?? ""}
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button
+                      data-testid={`ack-${a.id}`}
+                      onClick={async () => {
+                        await api(`/api/projects/${id}/alerts/ack`, {
+                          method: "POST",
+                          body: JSON.stringify({ kind: a.kind, flowId: a.payload.flowId }),
+                        });
+                        refresh();
+                      }}
+                    >
+                      acknowledge
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
 
       {awaiting.length > 0 ? (
         <>
@@ -330,7 +370,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </tbody>
       </table>
 
-      <h2>Runs</h2>
+      <h2>
+        Runs{" "}
+        <button
+          data-testid="run-base-suite"
+          onClick={async () => {
+            await api(`/api/projects/${id}/base-run`, { method: "POST", body: JSON.stringify({ branch: "main" }) });
+            refresh();
+          }}
+        >
+          ▶ Run base suite now
+        </button>
+      </h2>
       <table>
         <thead>
           <tr>
