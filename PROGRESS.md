@@ -2,7 +2,68 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 10 — Base-branch lifecycle — ✅ AC PASSED (2026-07-09)**; next up: Phase 11 — Payments (Stripe)
+## Current phase: **Phase 11 — Payments (Stripe) — code complete (2026-07-09); live AC BLOCKED on a valid sk_test key + PR merge**
+
+### Phase 11 state
+
+Implementation complete, all gates green (~229 tests: api 160, runner 49).
+Built: runner payments/ (PaymentProvider interface + Stripe module — hosted
+Checkout direct inputs + embedded Elements frameLocator; detectTestMode
+checks LIVE signals first: pk_live_/cs_live_ anywhere ⇒ live ⇒ refuse;
+cs_test_/pk_test_/test-badge ⇒ confirmed; nothing ⇒ null ⇒ fail closed),
+executePaymentStep (surface wait → GUARD before secrets are even resolved →
+fill → 3DS challenge for variant card_3ds or known-3DS cards), origin-guard
+Stripe allowlist only for payment specs, tracing disabled for payment specs,
+heal excluded from payment steps/guard failures, payment_configs CRUD
+(consent gate 400, unrecognized-card 409 + double confirm, PR overrides,
+card/cvc as vault secrets), config-bundle payment resolution per target,
+compiler payment detection (provider click-sequence → ONE typed step;
+needsAttention without config; post-payment dom assertions get
+caveats:[webhook_dependent]), comparator webhook-attribution rule (payment
+visibly succeeded + caveatted assertion failed + diff didn't touch purchase
+code → 🟣 webhook copy), dashboard Payments panel, demo-app WEBHOOK_MODE +
+CHECKOUT_LIVE_SIM chaos + /live-checkout-sim page.
+
+**Live evidence so far:**
+- Consent gate 400 / unrecognized-card 409+confirm / recognized 4242 → 201
+  (config pay_263gtam7269aop, cardLast4 4242) — all live against the api ✓
+- Spliced REAL recording (stripe hop injected into the Phase 5 trace) →
+  compiled draft `fsv_4skociypcnvjrk` with typed step `s2 "Complete payment
+  (Stripe test mode)" payment/stripe/card`, attached to the EXISTING flow
+  (re-record-by-name fix) ✓
+
+**BLOCKED: the STRIPE_SECRET_KEY on Vercel is invalid at runtime** — with
+MOCK_PAYMENTS=0 explicitly set, authenticated buy still 303s straight to
+/shop/success, i.e. `!process.env.STRIPE_SECRET_KEY` is true in the lambda.
+Founder must re-paste a valid `sk_test_…` key (Preview + Production) in the
+Vercel dashboard — do NOT paste it in chat.
+
+**Remaining live AC (after key + PR #16 merge):**
+1. Merge deploys demo chaos hooks; base run will quarantine the rip flow
+   (old spec's buy now redirects to Stripe) — expected, promotion fixes it.
+2. Confirm draft fsv_4skociypcnvjrk with review edits (locators renamed to
+   "Buy a Pack"/purchase-btn per Phase 10 refactor; s1 postConditions
+   cleared; s2 postCondition pathMatches ^/shop/success$; s3 pack-card
+   assertion + caveats webhook_dependent; s5 strengthened assertions from the
+   old official) → validation against production (real Stripe checkout,
+   4242) → green → auto-promoted.
+3. Trivial PR → full checkout on preview → ✅ green.
+4. PR-scoped payment override with 4000002760003155 → 3DS challenge → ✅.
+5. CHECKOUT_LIVE_SIM=1 on Preview for the PR → guard → 🟣 "payment step
+   skipped — could not verify test mode", HAR shows no fill.
+6. WEBHOOK_MODE=1 on Preview → purchase succeeds, pack-card assertion fails
+   → 🟣 webhook copy, not 🔴.
+
+### Phase 11 lessons (so far)
+
+- Vercel "sensitive" env values cannot be decrypted via API — RUNTIME
+  behavior is the only ground truth for whether a key is usable.
+- Re-recording an existing flow name hit the (project,name) unique
+  constraint — compile now attaches drafts to the existing flow.
+- Spliced-trace uploads are a clean way to exercise compiler detection
+  paths without redoing a Chrome-extension session (scripts/splice-stripe.ts).
+
+## Previous: **Phase 10 — Base-branch lifecycle — ✅ AC PASSED (2026-07-09)**
 
 ### Phase 10 AC evidence (live; PR #13 merge + BREAK_RIP env chaos + PR #14)
 
