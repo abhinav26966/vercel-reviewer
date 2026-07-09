@@ -98,10 +98,10 @@ export async function ensureStorageState(
 
     const ctx = { page, baseUrl, tracker, logger: deps.logger, lookupSecret: deps.lookupSecret };
     for (const step of persona.loginSpec.steps) {
-      let failure = await runStepOnce(ctx, step);
-      if (failure) failure = await runStepOnce(ctx, step); // one deterministic retry
-      if (failure) {
-        throw new LoginFailedError(`step ${step.id} "${step.title}": ${failure.message}`);
+      let outcome = await runStepOnce(ctx, step);
+      if (outcome.failure) outcome = await runStepOnce(ctx, step); // one deterministic retry
+      if (outcome.failure) {
+        throw new LoginFailedError(`step ${step.id} "${step.title}": ${outcome.failure.message}`);
       }
     }
 

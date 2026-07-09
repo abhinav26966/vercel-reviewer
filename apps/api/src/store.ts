@@ -3,6 +3,7 @@ import type { Db } from "@flowguard/db";
 import {
   baseResultCache,
   credentialSets,
+  perfBaselines,
   deployments,
   flowSpecVersions,
   flows,
@@ -179,6 +180,15 @@ export interface Store {
   }): Promise<void>;
   /** Reruns replace a run's verdicts wholesale. */
   deleteVerdictsForRun(runId: string): Promise<void>;
+  /** Perf baseline write path (doc 05 §4); refreshed by base runs in Phase 10. */
+  upsertPerfBaseline(input: {
+    flowId: string;
+    branch: string;
+    sha: string;
+    stepKey: string;
+    medianMs: number;
+    samples: number;
+  }): Promise<void>;
 
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   createRecording(input: {
@@ -683,6 +693,36 @@ export class DrizzleStore implements Store {
 
   async deleteVerdictsForRun(runId: string): Promise<void> {
     await this.db.delete(verdicts).where(eq(verdicts.runId, runId));
+  }
+
+  async upsertPerfBaseline(input: {
+    flowId: string;
+    branch: string;
+    sha: string;
+    stepKey: string;
+    medianMs: number;
+    samples: number;
+  }): Promise<void> {
+    const existing = await this.db
+      .select({ id: perfBaselines.id })
+      .from(perfBaselines)
+      .where(
+        and(
+          eq(perfBaselines.flowId, input.flowId),
+          eq(perfBaselines.branch, input.branch),
+          eq(perfBaselines.sha, input.sha),
+          eq(perfBaselines.stepKey, input.stepKey),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      await this.db
+        .update(perfBaselines)
+        .set({ medianMs: input.medianMs, samples: input.samples })
+        .where(eq(perfBaselines.id, existing[0].id));
+    } else {
+      await this.db.insert(perfBaselines).values({ id: newId("perfBaseline"), ...input });
+    }
   }
 
   async createRecording(input: {

@@ -55,7 +55,7 @@ describe("secret typing via CDP", () => {
     const c = ctx("data:text/html,<input type=password data-testid=password-input />");
     // data: URLs have no host — both page and base resolve to empty host, guard passes
     c.lookupSecret = async () => "s3cr3t-pw";
-    const failure = await runStepOnce(c, typeStep("{{secret:default.password}}"));
+    const { failure } = await runStepOnce(c, typeStep("{{secret:default.password}}"));
     expect(failure).toBeNull();
     expect(await page.locator("input").inputValue()).toBe("s3cr3t-pw");
   });
@@ -63,7 +63,7 @@ describe("secret typing via CDP", () => {
   it("refuses to type secrets into a different origin (fail closed)", async () => {
     await page.goto("data:text/html,<input type=password data-testid=password-input />");
     const c = ctx("https://the-real-deployment.vercel.app", { "default.password": "s3cr3t-pw" });
-    const failure = await runStepOnce(c, typeStep("{{secret:default.password}}"));
+    const { failure } = await runStepOnce(c, typeStep("{{secret:default.password}}"));
     expect(failure).not.toBeNull();
     expect(failure!.failureClass).toBe("env");
     expect(failure!.message).toContain("refusing to type a secret");
@@ -73,14 +73,14 @@ describe("secret typing via CDP", () => {
     await page.goto("data:text/html,<input type=password data-testid=password-input />");
     const c = ctx("data:text/html,x");
     delete (c as Partial<StepContext>).lookupSecret;
-    const failure = await runStepOnce(c, typeStep("{{secret:default.password}}"));
+    const { failure } = await runStepOnce(c, typeStep("{{secret:default.password}}"));
     expect(failure).not.toBeNull();
     expect(failure!.message).toContain("no credentials");
   });
 
   it("plain values still use ordinary fill", async () => {
     await page.goto("data:text/html,<input type=password data-testid=password-input />");
-    const failure = await runStepOnce(ctx("data:text/html,x"), typeStep("plain-value"));
+    const { failure } = await runStepOnce(ctx("data:text/html,x"), typeStep("plain-value"));
     expect(failure).toBeNull();
     expect(await page.locator("input").inputValue()).toBe("plain-value");
   });
