@@ -230,7 +230,10 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     const bypassSecret = project.vercelBypassSecretRef
       ? await deps.resolveSecret(project.vercelBypassSecretRef)
       : null;
-    const timeoutMs = deps.flowJobTimeoutMs ?? 300_000;
+    // per-flow-job await; counted from enqueue, so it must cover queue depth on
+    // a small worker pool with slow flows (canvas quiescence, vision/Claude
+    // latency, real-payment round-trips). 10min ≪ the 45min stuck-run sweeper.
+    const timeoutMs = deps.flowJobTimeoutMs ?? 600_000;
     // by convention the flow named "Login" establishes persona sessions (doc 07 §5);
     // it resolves from ALL flows — being skipped by selection doesn't remove the role
     const loginSpec = allFlows.find((f) => f.flowName.toLowerCase() === "login")?.spec ?? null;

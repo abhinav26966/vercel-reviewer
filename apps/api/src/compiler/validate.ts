@@ -130,7 +130,7 @@ export async function validateDraft(
     }),
     jobId,
   );
-  const result = await deps.awaitFlowResult(jobId, 300_000);
+  const result = await deps.awaitFlowResult(jobId, 600_000);
 
   await store.insertRunFlowResult({
     runId: run.id,
