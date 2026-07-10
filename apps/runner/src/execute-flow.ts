@@ -262,7 +262,12 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         // env-class failures stay env: a half-loaded/mid-redirect page LOOKS
         // blank, and "deployment unreachable" must never become "your app died"
         const envClass = attempt.failure.failureClass === "env" || attempt.failure.failureClass === "payment_unverified_env";
-        if (!envClass && (attempt.failure.failureClass === "assertion" || cls.status === "dead")) {
+        // an assertion that EVALUATED to false proves the DOM rendered and was
+        // queryable — a visually-sparse-but-valid page (e.g. an empty-state
+        // list) is NOT dead. Only blank_screen is prone to this; crash /
+        // Next-overlay / pageerror remain trustworthy and still override.
+        const blankFalsePositive = cls.failureClass === "blank_screen" && attempt.failure.failureClass === "assertion";
+        if (!envClass && !blankFalsePositive && (attempt.failure.failureClass === "assertion" || cls.status === "dead")) {
           outcome = cls.status;
           failureClassOverride = cls.failureClass;
           failureDetail = cls.detail;
