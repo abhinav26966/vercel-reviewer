@@ -1,0 +1,36 @@
+{
+  "name": "@flowguard/state",
+  "version": "0.1.0",
+  "description": "Optional one-line state SDK for FlowGuard — expose app state so GUI flow tests read it directly instead of guessing from pixels.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "flowguard",
+    "testing",
+    "e2e",
+    "state"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.9"
+  }
+}

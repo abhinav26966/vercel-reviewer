@@ -169,6 +169,30 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
         assertions: [],
       };
     }
+    // WebGL smoke check (doc 04 §2): canvas flows need software WebGL to be
+    // live. If the launch args didn't yield a context, that's the ENVIRONMENT,
+    // not the flow — report env_issue rather than a mystery canvas failure.
+    if (outcome === "passed" && spec.steps.some((s) => s.action.type === "canvasClick")) {
+      const webglOk = await page
+        .evaluate(() => {
+          try {
+            const c = document.createElement("canvas");
+            return Boolean(c.getContext("webgl2") || c.getContext("webgl") || c.getContext("experimental-webgl"));
+          } catch {
+            return false;
+          }
+        })
+        .catch(() => false);
+      if (!webglOk) {
+        outcome = "error";
+        failure = {
+          failureClass: "env",
+          message: "WebGL unavailable in the runner — canvas flow cannot render (environment, not a flow failure)",
+          assertions: [],
+        };
+        logger.error("WebGL context unavailable — check --use-angle=swiftshader launch args");
+      }
+    }
 
     const stepCtx = {
       page,
@@ -185,6 +209,7 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           }
         : null,
       ...(opts.secretResolver ? { resolveRef: (ref: string) => opts.secretResolver!.resolve(ref) } : {}),
+      ...(opts.inference ? { inference: opts.inference } : {}),
     };
     for (const step of outcome === "passed" ? spec.steps : []) {
       if (opts.shouldAbort && (await opts.shouldAbort())) {

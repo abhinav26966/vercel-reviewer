@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@flowguard/state": "workspace:*",
     "@react-three/fiber": "^9.6.1",
     "next": "^15.5.20",
     "react": "^19.2.7",

@@ -3,8 +3,6 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    // DOM lib covers the browser-context bodies of page.evaluate() callbacks
-    // (window/document); the runner itself still runs on Node.
     "lib": ["ES2022", "DOM"]
   },
   "include": ["src"]
