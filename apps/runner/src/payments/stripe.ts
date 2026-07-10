@@ -51,7 +51,7 @@ export class StripeProvider implements PaymentProvider {
   }
 
   async fill(page: Page, card: PaymentCard): Promise<void> {
-    const scope = await this.formScope(page);
+    const scope = await this.waitForForm(page);
     const field = async (selectors: string[], value: string, required: boolean) => {
       for (const sel of selectors) {
         const loc = scope.locator(sel).first();
@@ -104,13 +104,35 @@ export class StripeProvider implements PaymentProvider {
     throw new Error("stripe: 3DS challenge frame never presented a completion button");
   }
 
-  /** Hosted Checkout = direct page inputs; embedded Elements = js.stripe.com frame. */
-  private async formScope(page: Page): Promise<Page | FrameLocator> {
-    const direct = await page
-      .locator('[name="cardNumber"], #cardNumber')
-      .count()
-      .catch(() => 0);
-    if (direct > 0) return page;
-    return page.frameLocator('iframe[src*="js.stripe.com"]');
+  /**
+   * Hosted Checkout hydrates its React form LATE (learned live: fields absent
+   * at act time) and may collapse the card option behind a wallet accordion.
+   * Wait for a visible card-number field on the page, expanding the card
+   * accordion when present; fall back to an embedded-Elements frame.
+   */
+  private async waitForForm(page: Page): Promise<Page | FrameLocator> {
+    const directSel = '[name="cardNumber"], #cardNumber, [placeholder*="1234 1234"]';
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      if (await page.locator(directSel).first().isVisible().catch(() => false)) return page;
+      const cardTab = page
+        .locator('[data-testid="card-accordion-item-button"], button:has-text("Pay with card"), [data-testid="card-tab"]')
+        .first();
+      if (await cardTab.isVisible().catch(() => false)) {
+        await cardTab.click({ timeout: 2000 }).catch(() => {});
+      }
+      const frame = page.frameLocator('iframe[src*="js.stripe.com"]');
+      if (
+        await frame
+          .locator(directSel)
+          .first()
+          .isVisible()
+          .catch(() => false)
+      ) {
+        return frame;
+      }
+      await page.waitForTimeout(500);
+    }
+    throw new Error("stripe: card form never became visible on the checkout surface");
   }
 }
