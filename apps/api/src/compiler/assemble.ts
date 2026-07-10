@@ -24,6 +24,10 @@ export interface AssembleInput {
   /** all data-testids seen in captured DOM outlines (hallucination guard) */
   knownTestIds: Set<string>;
   dropped: Array<{ id: string; reason: string }>;
+  /** Event ids inside payment-provider context (doc 03 B5) → ONE typed payment step. */
+  paymentEventIds?: Set<string>;
+  /** false ⇒ the payment step is flagged needsAttention (consent gate, doc 07 §6). */
+  hasPaymentConfig?: boolean;
 }
 
 export interface CompilationReport {
@@ -63,9 +67,37 @@ export function assembleSpec(input: AssembleInput): AssembleResult {
   let stepSeq = 0;
 
   const consumedNavigations = new Set<string>();
+  let paymentStepEmitted = false;
   for (let i = 0; i < flowEvents.length; i++) {
     const ne = flowEvents[i]!;
     const ev = ne.event;
+
+    // payment context (doc 03 B5): the whole provider click-sequence becomes
+    // ONE typed step — recorded iframe internals are opaque and unneeded
+    if (input.paymentEventIds?.has(ev.id)) {
+      if (!paymentStepEmitted) {
+        paymentStepEmitted = true;
+        const stepId = `s${++stepSeq}`;
+        steps.push({
+          id: stepId,
+          title: "Complete payment (Stripe test mode)",
+          action: { type: "payment", provider: "stripe", variant: "card", configRef: "project" },
+          settle: { strategy: "navigation", timeoutMs: 30000 },
+          postConditions: [],
+          timingBaselineKey: stepId,
+        });
+        report.stepSourceEvents[stepId] = [...input.paymentEventIds];
+        if (!input.hasPaymentConfig) {
+          report.needsAttention.push({
+            stepId,
+            message:
+              "payment step requires a payment config — configure payments for this project (consent gate, doc 07 §6)",
+          });
+        }
+      }
+      continue;
+    }
+    // steps after a payment step asserting server state may depend on webhooks
     if (ev.type === "navigation") {
       if (consumedNavigations.has(ev.id)) continue;
       if (i === 0) continue; // covered by startPath
@@ -106,6 +138,11 @@ export function assembleSpec(input: AssembleInput): AssembleResult {
       action,
       settle,
       postConditions,
+      // server-state assertions after a payment may hinge on provider webhooks
+      // reaching the preview (doc 05 §3.5) — mark them for the comparator
+      ...(paymentStepEmitted && postConditions.some((a) => a.kind === "dom" || a.kind === "state")
+        ? { caveats: ["webhook_dependent" as const] }
+        : {}),
       timingBaselineKey: stepId,
     });
     report.stepSourceEvents[stepId] = [ev.id, ...(causedNav ? [causedNav.event.id] : [])];

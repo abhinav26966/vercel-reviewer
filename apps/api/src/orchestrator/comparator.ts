@@ -122,6 +122,8 @@ export function compareFlow(params: {
   link: ArtifactLinker;
   /** Dashboard URL for entering PR-scoped credentials (login_failed copy). */
   credentialsUrl?: string;
+  /** For the webhook-attribution rule (doc 05 §3.5); absent = diff unknown. */
+  changedFiles?: string[];
 }): FlowComparison {
   const { spec, head, base, baseAvailable, link } = params;
 
@@ -162,6 +164,23 @@ export function compareFlow(params: {
   // head genuinely failed/hung/died at a step
   const failureDetail = describeFailure(spec, head, link);
 
+  // webhook attribution (doc 05 §3.5): the purchase visibly succeeded, the
+  // caveatted state assertion failed, and the diff didn't touch purchase code
+  // → 🟣, never 🔴. This happens CONSTANTLY with buy-then-use flows on
+  // previews — correct attribution here is a trust cornerstone.
+  const failedStep = spec.steps.find((s) => s.id === head.failedStepId);
+  if (
+    failedStep?.caveats?.includes("webhook_dependent") &&
+    head.failureClass === "assertion" &&
+    paymentVisiblySucceeded(spec, head) &&
+    !diffTouchesPurchaseCode(params.changedFiles)
+  ) {
+    return {
+      verdict: "env_issue",
+      detail: `purchase completed but app state never updated — commonly a payment webhook not configured for preview URLs · ${failureDetail}`,
+    };
+  }
+
   // the honesty rule (doc 04 §4): blaming the PR requires base-side green
   if (base && base.status !== "passed" && base.status !== "error") {
     return {
@@ -178,6 +197,21 @@ export function compareFlow(params: {
   if (head.status === "hung") return { verdict: "hung", detail: failureDetail };
   if (head.status === "dead") return { verdict: "dead", detail: failureDetail };
   return { verdict: "broken", detail: failureDetail };
+}
+
+/** The payment step ran and the flow progressed past it (success redirect). */
+function paymentVisiblySucceeded(spec: FlowSpec, head: RunFlowResult): boolean {
+  const paymentStep = spec.steps.find((s) => s.action.type === "payment");
+  if (!paymentStep) return false;
+  const executed = head.steps.some((s) => s.id === paymentStep.id);
+  return executed && head.failedStepId !== paymentStep.id;
+}
+
+function diffTouchesPurchaseCode(changedFiles?: string[]): boolean {
+  if (!changedFiles) return false; // diff unknown (validation runs) — rule still applies
+  return changedFiles.some((f) =>
+    /(pay|stripe|checkout|billing|purchase|buy|webhook|confirm|order|invoice)/i.test(f),
+  );
 }
 
 function envCopy(head: RunFlowResult, credentialsUrl?: string): string {

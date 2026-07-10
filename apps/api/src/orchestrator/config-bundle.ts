@@ -69,5 +69,23 @@ export async function buildConfigBundle(ctx: BundleContext, spec: FlowSpec): Pro
     }
   }
 
-  return { persona, payment: null, secretRefs, dataBranchDiffers };
+  // payment bundle (doc 07 §6): same head→PR-scope→project hierarchy; refs
+  // only — the runner exchanges them at fill time, AFTER the live-mode guard
+  let payment: ConfigBundle["payment"] = null;
+  if (spec.steps.some((s) => s.action.type === "payment")) {
+    const config = await ctx.store.resolvePaymentConfig(ctx.projectId, ctx.prNumber);
+    if (config) {
+      payment = {
+        provider: config.provider as "stripe" | "paypal_sandbox" | "razorpay_test" | "custom",
+        cardRef: config.cardSecretId,
+        expiry: config.expiry,
+        cvcRef: config.cvcSecretId,
+        source: config.scope === "pr" ? "pr" : "project",
+        extras: config.extras,
+      };
+    }
+    // missing config → payment stays null; the runner fails the step closed
+  }
+
+  return { persona, payment, secretRefs, dataBranchDiffers };
 }

@@ -19,6 +19,13 @@ export async function POST(req: NextRequest) {
     await new Promise((r) => setTimeout(r, 1800));
   }
 
+  // Env chaos: CHECKOUT_LIVE_SIM=1 redirects to a page carrying LIVE-mode
+  // markers — exercises the runner's live-mode guard without live keys.
+  // Checked before the mock branch so the guard is testable in any mode.
+  if (process.env.CHECKOUT_LIVE_SIM === "1") {
+    return NextResponse.redirect(new URL("/live-checkout-sim", req.url), 303);
+  }
+
   if (mockPayments()) {
     const res = NextResponse.redirect(new URL("/shop/success", req.url), 303);
     return withSession(res, { ...session, packs: session.packs + 1 });
