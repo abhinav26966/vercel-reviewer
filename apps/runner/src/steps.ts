@@ -92,9 +92,11 @@ export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<Ste
   const settleMs = Date.now() - settleStart;
 
   // vision assertions read the SETTLE screenshot (doc 04 §6) — capture once,
-  // at the settle point, and share it across any vision post-conditions
+  // at the settle point, and share it across any vision post-conditions.
+  // fullPage so content below the fold (e.g. a revealed-cards grid under a tall
+  // canvas) is counted — a viewport clip silently drops elements.
   const needsShot = step.postConditions.some((a) => a.kind === "vision");
-  const shot = needsShot ? await ctx.page.screenshot({ timeout: 5000 }).catch(() => null) : null;
+  const shot = needsShot ? await ctx.page.screenshot({ fullPage: true, timeout: 5000 }).catch(() => null) : null;
   const assertCtx = { inference: ctx.inference };
 
   const results: StepAssertionResult[] = [];
