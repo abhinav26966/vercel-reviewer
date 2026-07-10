@@ -19,6 +19,17 @@ export class PaymentUnverifiedError extends Error {
   }
 }
 
+/** The provider gated checkout behind a CAPTCHA (doc 07 §7 — a v1 wall). */
+export class PaymentCaptchaError extends Error {
+  constructor() {
+    super(
+      "payment provider presented a CAPTCHA on checkout — FlowGuard never attempts to solve CAPTCHAs. " +
+        "Use Stripe test keys with Radar/bot-protection disabled on preview deployments, or the non-3DS card variant.",
+    );
+    this.name = "PaymentCaptchaError";
+  }
+}
+
 const PROVIDERS: Record<string, PaymentProvider> = {
   stripe: new StripeProvider(),
 };
@@ -70,6 +81,31 @@ export async function executePaymentStep(ctx: StepContext, action: PaymentAction
   if (action.variant === "card_3ds" || STRIPE_3DS_TEST_CARDS.has(card.number)) {
     await provider.handleChallenge(ctx.page);
   }
+
+  // 5. return to the app: hosted checkout redirects provider → confirm → app in
+  // several hops. The step is not done until the browser is back on the
+  // deployment origin — otherwise the NEXT step runs mid-redirect on a
+  // provider page and its locators all miss (learned live).
+  await waitForReturnToApp(ctx.page, provider, ctx.baseUrl, 30_000);
+}
+
+async function waitForReturnToApp(page: Page, provider: PaymentProvider, _baseUrl: string, timeoutMs: number): Promise<void> {
+  const onProvider = () => {
+    const host = safeHost(page.url());
+    return provider.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`));
+  };
+  // give the provider→confirm→app redirect chain a beat to start, then wait
+  // until the main frame has LEFT the provider surface
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!onProvider()) {
+      await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+      return;
+    }
+    await page.waitForTimeout(500);
+  }
+  // don't hard-fail: the payment step's post-conditions (e.g. a success-url
+  // assertion) are the authority on whether the return actually happened
 }
 
 /** The payment surface: an allowlisted provider host, or a provider frame on the app page. */

@@ -16,6 +16,13 @@ export interface ClassifyInput {
   pageErrors: number;
   nextErrorOverlay: boolean;
   blankScreenScore: number;
+  /**
+   * Rendered element count inside the primary content region (<main>, else
+   * <body> minus chrome). A page with real content is NOT dead however
+   * pixel-uniform it looks — dark themes and empty-state lists trip the pixel
+   * heuristic. >0 vetoes a blank-screen classification (doc 04 §4).
+   */
+  mainContentCount: number;
 }
 
 export interface Classification {
@@ -32,11 +39,13 @@ export function classifyFailure(input: ClassifyInput): Classification {
   if (input.nextErrorOverlay) {
     return { status: "dead", failureClass: "crash", detail: "Next.js error overlay present" };
   }
-  if (input.blankScreenScore > 0.98) {
+  // blank ⇒ dead ONLY when the content region is genuinely empty. A dark or
+  // sparse-but-rendered page (an empty-state list) is uniform yet alive.
+  if (input.blankScreenScore > 0.98 && input.mainContentCount === 0) {
     return {
       status: "dead",
       failureClass: "blank_screen",
-      detail: `blank screen (uniformity ${(input.blankScreenScore * 100).toFixed(1)}%)`,
+      detail: `blank screen (uniformity ${(input.blankScreenScore * 100).toFixed(1)}%, no rendered content)`,
     };
   }
   if (input.pageErrors > 0) {
@@ -110,6 +119,18 @@ export function blankScreenScore(pngBuffer: Buffer): number {
   }
   const dominant = Math.max(...buckets.values());
   return total === 0 ? 0 : dominant / total;
+}
+
+/** Count rendered elements in the primary content region (blank-screen veto). */
+export async function mainContentCount(page: Page): Promise<number> {
+  try {
+    const main = page.locator("main, [role=main]").first();
+    if ((await main.count()) > 0) return await main.locator("*").count();
+    // no <main>: count body descendants excluding site chrome
+    return await page.locator("body *:not(nav):not(header):not(footer):not(script):not(style)").count();
+  } catch {
+    return 0;
+  }
 }
 
 /** Next.js error overlay / build error containers (doc 04 §4 — cheap, high-signal). */

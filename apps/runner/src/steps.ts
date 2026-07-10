@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import type { Logger } from "pino";
 import { evalAssertion } from "./assertions.js";
 import type { NetworkTracker } from "./network-tracker.js";
-import { executePaymentStep, PaymentUnverifiedError } from "./payments/execute.js";
+import { executePaymentStep, PaymentCaptchaError, PaymentUnverifiedError } from "./payments/execute.js";
 import { LocatorMissError, resolveLocator } from "./pw-locators.js";
 import { findSecretPlaceholders } from "./secrets.js";
 import type { FlowStep, StepAssertionResult } from "./types.js";
@@ -50,8 +50,8 @@ export async function runStepOnce(ctx: StepContext, step: FlowStep): Promise<Ste
         settleTimedOut: false,
       };
     }
-    if (err instanceof PaymentUnverifiedError) {
-      // the live-mode guard fired (doc 07 §6): 🟣, never a flow failure
+    if (err instanceof PaymentUnverifiedError || err instanceof PaymentCaptchaError) {
+      // the live-mode guard or a CAPTCHA wall (doc 07 §6/§7): 🟣, never a flow failure
       return {
         failure: { failureClass: "payment_unverified_env", message: err.message, assertions: [] },
         settleMs: 0,

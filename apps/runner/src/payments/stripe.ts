@@ -1,5 +1,6 @@
 import type { FrameLocator, Page } from "playwright";
 import type { PaymentCard, PaymentProvider, TestModeVerdict } from "./provider.js";
+import { PaymentCaptchaError } from "./execute.js";
 
 /**
  * Stripe module (doc 07 §6): hosted Checkout first (the demo-app path —
@@ -24,20 +25,24 @@ export class StripeProvider implements PaymentProvider {
   readonly frameAllowlist = STRIPE_FRAME_ALLOWLIST;
 
   /**
-   * Positive confirmation of test mode, live signals checked FIRST (a page
-   * carrying both is treated as live → fail closed):
-   *   cs_live_/pk_live_ anywhere → false
-   *   cs_test_ in the URL, pk_test_ in page context, or the Checkout
-   *   test-mode badge → true
-   *   nothing recognizable → null (⇒ payment_unverified_env)
+   * Positive confirmation of test mode.
+   *
+   * Signal precedence (learned live): the checkout session id in the URL is
+   * AUTHORITATIVE — a cs_test_ session cannot charge, period. Page-content
+   * scans must match FULL key shapes (pk_live_<24+ alnum>), because Stripe's
+   * own JavaScript contains "pk_live" as a bare code literal on every page.
+   * Within content, live signals still beat test signals; nothing
+   * recognizable → null (⇒ payment_unverified_env, fail closed).
    */
   async detectTestMode(page: Page): Promise<TestModeVerdict> {
+    const LIVE_KEY = /(?:pk|cs|sk)_live_[A-Za-z0-9]{16,}/;
+    const TEST_KEY = /(?:pk|cs|sk)_test_[A-Za-z0-9]{16,}/;
     const url = page.url();
-    if (/cs_live_|pk_live_/.test(url)) return false;
+    if (/cs_live_[A-Za-z0-9]/.test(url)) return false;
+    if (/cs_test_[A-Za-z0-9]/.test(url)) return true;
     const html = await page.content().catch(() => "");
-    if (/pk_live_|cs_live_/.test(html)) return false;
-    if (/cs_test_/.test(url)) return true;
-    if (/pk_test_|cs_test_/.test(html)) return true;
+    if (LIVE_KEY.test(html)) return false;
+    if (TEST_KEY.test(html)) return true;
     const badge = await page
       .getByText(/test mode/i)
       .count()
@@ -47,7 +52,7 @@ export class StripeProvider implements PaymentProvider {
   }
 
   async fill(page: Page, card: PaymentCard): Promise<void> {
-    const scope = await this.formScope(page);
+    const scope = await this.waitForForm(page);
     const field = async (selectors: string[], value: string, required: boolean) => {
       for (const sel of selectors) {
         const loc = scope.locator(sel).first();
@@ -76,37 +81,91 @@ export class StripeProvider implements PaymentProvider {
    * (`#test-source-authorize-3ds` on older flows). Frames nest unpredictably —
    * poll every frame on an allowlisted Stripe host.
    */
+  /** A bot-protection CAPTCHA on the checkout surface (doc 07 §7 — never beat). */
+  detectCaptcha(page: Page): boolean {
+    return page.frames().some((f) => /hcaptcha\.com|recaptcha|google\.com\/recaptcha|challenges\.cloudflare\.com|turnstile/i.test(f.url()));
+  }
+
   async handleChallenge(page: Page): Promise<void> {
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 45_000;
+    // the completion control lives in a nested challenge frame; button text
+    // varies across Stripe's test-3DS revisions
+    const completeSelectors = [
+      "#test-source-authorize-3ds",
+      'button:has-text("Complete authentication")',
+      'button:has-text("Complete")',
+      'button:has-text("Authorize Test Payment")',
+      'button:has-text("Authorize")',
+      '[data-testid="challenge-complete-button"]',
+    ].join(", ");
     while (Date.now() < deadline) {
+      // page.frames() is recursive; a 3DS/ACS challenge frame may sit under
+      // hooks.stripe.com or a challenge subframe
       for (const frame of page.frames()) {
-        let host = "";
-        try {
-          host = new URL(frame.url()).host;
-        } catch {
-          continue;
-        }
-        if (!this.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`))) continue;
-        const button = frame
-          .locator('#test-source-authorize-3ds, button:has-text("Complete authentication"), button:has-text("Complete"), button:has-text("Authorize Test Payment")')
-          .first();
+        const host = safeHost(frame.url());
+        const onStripe = this.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`));
+        const looksChallenge = /3ds|challenge|acs|authenticate/i.test(frame.url());
+        if (!onStripe && !looksChallenge) continue;
+        const button = frame.locator(completeSelectors).first();
         if ((await button.count().catch(() => 0)) > 0 && (await button.isVisible().catch(() => false))) {
           await button.click({ timeout: 5000 }).catch(() => {});
+          await page.waitForTimeout(1500);
           return;
         }
       }
+      // some test flows land back on the app without a modal (frictionless) —
+      // if we've already left the provider host, the challenge is done
+      const onProvider = this.frameAllowlist.some((h) => {
+        const host = safeHost(page.url());
+        return host === h || host.endsWith(`.${h}`);
+      });
+      if (!onProvider && Date.now() > deadline - 40_000) return;
+      if (this.detectCaptcha(page)) {
+        throw new PaymentCaptchaError();
+      }
       await page.waitForTimeout(1000);
     }
+    if (this.detectCaptcha(page)) throw new PaymentCaptchaError();
     throw new Error("stripe: 3DS challenge frame never presented a completion button");
   }
 
-  /** Hosted Checkout = direct page inputs; embedded Elements = js.stripe.com frame. */
-  private async formScope(page: Page): Promise<Page | FrameLocator> {
-    const direct = await page
-      .locator('[name="cardNumber"], #cardNumber')
-      .count()
-      .catch(() => 0);
-    if (direct > 0) return page;
-    return page.frameLocator('iframe[src*="js.stripe.com"]');
+  /**
+   * Hosted Checkout hydrates its React form LATE (learned live: fields absent
+   * at act time) and may collapse the card option behind a wallet accordion.
+   * Wait for a visible card-number field on the page, expanding the card
+   * accordion when present; fall back to an embedded-Elements frame.
+   */
+  private async waitForForm(page: Page): Promise<Page | FrameLocator> {
+    const directSel = '[name="cardNumber"], #cardNumber, [placeholder*="1234 1234"]';
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      if (await page.locator(directSel).first().isVisible().catch(() => false)) return page;
+      const cardTab = page
+        .locator('[data-testid="card-accordion-item-button"], button:has-text("Pay with card"), [data-testid="card-tab"]')
+        .first();
+      if (await cardTab.isVisible().catch(() => false)) {
+        await cardTab.click({ timeout: 2000 }).catch(() => {});
+      }
+      const frame = page.frameLocator('iframe[src*="js.stripe.com"]');
+      if (
+        await frame
+          .locator(directSel)
+          .first()
+          .isVisible()
+          .catch(() => false)
+      ) {
+        return frame;
+      }
+      await page.waitForTimeout(500);
+    }
+    throw new Error("stripe: card form never became visible on the checkout surface");
+  }
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
   }
 }

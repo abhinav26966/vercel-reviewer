@@ -154,6 +154,16 @@ export function compareFlow(params: {
     return { verdict: "passing", detail: `${secs}s` };
   }
 
+  // an aborted (superseded) run's flows report "skipped" — never blame the PR
+  // for a run we cancelled ourselves (belt-and-braces; the orchestrator should
+  // not report superseded runs at all)
+  if (head.status === "skipped") {
+    return {
+      verdict: "env_issue",
+      detail: "run was superseded before this flow completed — see the latest push's results",
+    };
+  }
+
   if (head.status === "error" || (head.failureClass && ENV_FAILURE_CLASSES.has(head.failureClass))) {
     return {
       verdict: "env_issue",
@@ -222,7 +232,8 @@ function envCopy(head: RunFlowResult, credentialsUrl?: string): string {
     return `login failed on this preview: credentials may be wrong, or this PR may use a separate database${fix}`;
   }
   if (head.failureClass === "payment_unverified_env") {
-    return "payment step skipped — could not verify test mode on this preview";
+    // the runner threads the specific reason (live-mode guard vs CAPTCHA wall) here
+    return head.diagnostics.failureDetail ?? "payment step skipped — could not verify test mode on this preview";
   }
   return "deployment unreachable or environment problem — not a flow failure";
 }

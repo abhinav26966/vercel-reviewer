@@ -8,7 +8,7 @@ export default function LiveCheckoutSimPage() {
     <main>
       <h1>Checkout</h1>
       {/* a live publishable key marker — the guard treats this as LIVE */}
-      <script dangerouslySetInnerHTML={{ __html: `window.__pk = "pk_live_SIMULATED_DO_NOT_USE";` }} />
+      <script dangerouslySetInnerHTML={{ __html: `window.__pk = "pk_live_SIMULATEDDONOTUSE00000000";` }} />
       {/* a stripe-hosted frame so the payment surface is "present" */}
       <iframe title="stripe" src="https://js.stripe.com/v3/controller.html" style={{ display: "none" }} />
       <form>

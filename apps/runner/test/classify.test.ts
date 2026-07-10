@@ -10,6 +10,7 @@ const base = {
   pageErrors: 0,
   nextErrorOverlay: false,
   blankScreenScore: 0,
+  mainContentCount: 0,
 };
 
 describe("classifyFailure (doc 04 §4)", () => {
@@ -46,6 +47,12 @@ describe("classifyFailure (doc 04 §4)", () => {
     expect(blank.status).toBe("dead");
     expect(blank.failureClass).toBe("blank_screen");
     expect(classifyFailure({ ...base, pageErrors: 2 }).failureClass).toBe("crash");
+  });
+
+  it("blank pixels but rendered content (dark/empty-state page) is NOT dead", () => {
+    const c = classifyFailure({ ...base, blankScreenScore: 0.992, mainContentCount: 3 });
+    expect(c.status).not.toBe("dead");
+    expect(c.failureClass).toBe("assertion");
   });
 
   it("dead outranks hung when both signal", () => {

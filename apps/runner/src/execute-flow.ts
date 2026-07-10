@@ -12,7 +12,7 @@ import { redactHarFile } from "./har-redact.js";
 import { NetworkTracker } from "./network-tracker.js";
 import { specUsesSecrets, type SecretResolver } from "./secrets.js";
 import { ensureStorageState, LoginFailedError } from "./session.js";
-import { blankScreenScore, classifyFailure, detectNextErrorOverlay } from "./classify.js";
+import { blankScreenScore, classifyFailure, detectNextErrorOverlay, mainContentCount } from "./classify.js";
 import { collectCoverage, startCoverage } from "./coverage.js";
 import { healStep } from "./heal.js";
 import { STRIPE_FRAME_ALLOWLIST } from "./payments/stripe.js";
@@ -226,11 +226,13 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
       const stepNetwork = tracker.window(stepStart, stepEnd);
 
       let screenshotKey: string | null = null;
+      let contentCount = 0;
       if (attempt.failure) {
         // classify BEFORE the bundle capture so the score comes from the same shot
         const shot = await page.screenshot({ timeout: 5000 }).catch(() => null);
         blankScore = shot ? blankScreenScore(shot) : 0;
         nextErrorOverlay = await detectNextErrorOverlay(page);
+        contentCount = await mainContentCount(page);
         screenshotKey = await captureFailureBundle(page, step, artifacts, job, tracker, consoleLines, logger, shot);
       }
 
@@ -258,8 +260,14 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           pageErrors: pageErrorsNow - pageErrorsBefore,
           nextErrorOverlay,
           blankScreenScore: blankScore,
+          mainContentCount: contentCount,
         });
-        if (attempt.failure.failureClass === "assertion" || cls.status === "dead") {
+        // env-class failures stay env: a half-loaded/mid-redirect page LOOKS
+        // blank, and "deployment unreachable" must never become "your app died"
+        const envClass = attempt.failure.failureClass === "env" || attempt.failure.failureClass === "payment_unverified_env";
+        // (blank-screen false positives on dark/sparse pages are vetoed inside
+        // classifyFailure via mainContentCount — see classify.ts)
+        if (!envClass && (attempt.failure.failureClass === "assertion" || cls.status === "dead")) {
           outcome = cls.status;
           failureClassOverride = cls.failureClass;
           failureDetail = cls.detail;
@@ -268,6 +276,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           }
         } else {
           outcome = "failed";
+          // surface the specific payment env message in the verdict (doc 07 §6/§7)
+          if (attempt.failure.failureClass === "payment_unverified_env") {
+            failureDetail = attempt.failure.message;
+          }
         }
         break; // subsequent steps are skipped (doc 04 §3)
       }

@@ -229,6 +229,22 @@ async function reconcileFlow(
   await persist(f.official.versionId, official);
   if (pending && f.pending) await persist(f.pending.versionId, pending);
 
+  // inconclusive results (aborted runs, env problems, unverified payment env)
+  // change NOTHING: quarantining a flow over an environment hiccup is the
+  // misattribution that kills trust (doc 05 §5.3 spirit)
+  const ENV_CLASSES = new Set(["env", "login_failed", "payment_unverified_env"]);
+  if (
+    official.status === "skipped" ||
+    official.status === "error" ||
+    (official.failureClass !== null && ENV_CLASSES.has(official.failureClass))
+  ) {
+    await alert(
+      "base_inconclusive",
+      `base run for "${f.flowName}" on ${branch} @ ${sha.slice(0, 7)} was inconclusive (${official.failureClass ?? official.status}) — baselines unchanged`,
+    );
+    return "inconclusive";
+  }
+
   // 1. promotion reconciliation (doc 05 §5.1)
   if (f.pending && pending) {
     if (pendingGreen) {

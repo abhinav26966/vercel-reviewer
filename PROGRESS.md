@@ -2,9 +2,87 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 11 — Payments (Stripe) — code complete (2026-07-09); live AC BLOCKED on a valid sk_test key + PR merge**
+## Current phase: **Phase 11 — Payments (Stripe) — ✅ 5/6 AC live-proven (2026-07-10); webhook-attribution logic proven at unit level, live repro blocked by post-checkout page flake. Ready for PR review.**
 
-### Phase 11 state
+### Phase 11 AC results (live, PR #17 + env chaos + real Stripe test mode)
+
+- (a) **Consent gate + soft validation** ✓ live: no-consent → 400; unrecognized
+  card → 409 + double-confirm; 4242 + consent → 201.
+- (b) **Recorded buy&rip compiles with a typed payment step** ✓: spliced a real
+  Stripe hop into the Phase-5 recording → compiled `s2 payment/stripe/card`,
+  attached to the existing flow.
+- (c) **Runs green through real Stripe test checkout + auto-promote** ✓: the
+  confirmed spec validated green (login→buy→hosted checkout→4242 fill→submit→
+  /shop/success→inventory→rip) and promoted to official
+  (`fsv_oapgsqdymcl8bh`); a base run refreshed baselines; PR #17 ran the
+  promoted spec green.
+- (d) **Live-mode guard fails closed 🟣, no fill** ✓: CHECKOUT_LIVE_SIM=1
+  preview → 🟣 "could not verify test mode (LIVE-mode signals present)",
+  failed at s2 with only 2 steps recorded (no card fill).
+- (e) **3DS variant** — this Stripe account gates 3DS behind **hCaptcha**
+  (Radar bot-protection on automated traffic). Per doc 07 §7 FlowGuard NEVER
+  beats CAPTCHAs: detects the challenge frame → 🟣 with actionable copy
+  ("use test keys without Radar/bot-protection, or the non-3DS variant").
+  This is the spec-correct 3DS outcome for this environment. ✓
+- (f) **Webhook attribution** — LOGIC unit-proven (payments.test.ts: payment
+  success + caveatted-assertion-fail + unrelated-diff → 🟣; purchase-code
+  diff → 🔴; guard 🟣). LIVE repro NOT yet green: with WEBHOOK_MODE=1 the run
+  reaches /inventory (correct empty state) but s3 "Click View inventory"
+  flakes as locator_miss because the post-real-checkout /shop/success page
+  stays unstable (Stripe apple-pay SDK pending 100s+), so the run reports 🔴
+  broken instead of the intended 🟣. This is a payment-return page-stability
+  gap, NOT an attribution-logic defect. **Follow-up for Phase 12** (robustness):
+  the payment step should settle on network-quiescence of the returned app
+  page, and/or the recorded flow's post-checkout step needs a stabler anchor.
+
+Built (see commits): runner payments/ (provider iface + Stripe: hosted
+Checkout + Elements, detectTestMode with URL-session-id authority + full
+key-shape scans, fill with late-hydration wait + card-accordion, 3DS +
+CAPTCHA detection, return-to-app wait), consent-gated payment_configs CRUD +
+soft validation, config-bundle payment resolution, compiler payment
+detection + webhook_dependent caveats, comparator webhook-attribution rule,
+dashboard Payments panel, demo-app WEBHOOK_MODE/CHECKOUT_LIVE_SIM chaos.
+
+### Phase 11 bugs found & fixed via live AC (all committed)
+
+1. A shadow `MOCK_PAYMENTS` (sensitive) env row on Vercel forced mock mode —
+   deleted; real Stripe now engages. (env, not code)
+2. **Live-mode guard prefix false-match**: Stripe's own JS contains `pk_live`
+   as a bare literal on every page → guard refused legit test checkouts. Fix:
+   URL `cs_test_` session id is authoritative; content scans require full key
+   shapes `(pk|cs|sk)_(live|test)_<16+ alnum>`.
+3. Hosted Checkout hydrates its form late → fill needs an explicit wait +
+   card-accordion expand.
+4. **Redelivered/reordered webhooks** started a run for an OLD push whose row
+   was newer → creation-order supersede cancelled the CURRENT push's run,
+   which then reported aborted flows as 🔴. Fix: the PR's live head sha is
+   authoritative at orchestration start; skipped (aborted) results → 🟣.
+5. A slow/failed 2nd measurement sample crashed the run (Promise.all) — sample
+   1 is authoritative; 2nd is now best-effort.
+6. Env-class failures (payment surface timeout on a mid-redirect white page)
+   were dead-classified and quarantined the promoted spec. Env never dead;
+   inconclusive base results change nothing (alert only).
+7. **Blank-screen false-dead on dark/empty pages**: pixel-uniformity alone
+   flagged a valid dark empty-inventory page as 🟠 dead. Fix: blank_screen
+   requires an EMPTY `<main>` (mainContentCount veto).
+8. 3DS → hCaptcha wall detection (doc 07 §7).
+9. Payment step now waits to return to the app origin before completing.
+10. Re-recording an existing flow name hit the (project,name) unique
+    constraint — drafts attach to the existing flow.
+
+### Phase 11 lessons
+
+- Vercel "sensitive" env values can't be decrypted via API and can silently
+  shadow a plain row of the same key — runtime behavior is the only truth.
+- Real hosted-Stripe test mode on this account surfaces hCaptcha for 3DS —
+  a genuine CAPTCHA wall, handled by detect-and-explain (never solve).
+- Live payment flows are slow (~167s/run) — n=2 sampling on a 1-worker queue
+  strains per-job await timeouts; sampling must degrade gracefully.
+- `git worktree` for chaos branches + force-push allowed on non-default
+  branches; the stale-push guard is essential once webhook redelivery enters
+  the picture.
+
+### Phase 11 state (superseded — kept for the pre-live plan)
 
 Implementation complete, all gates green (~229 tests: api 160, runner 49).
 Built: runner payments/ (PaymentProvider interface + Stripe module — hosted

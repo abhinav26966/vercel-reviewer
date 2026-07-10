@@ -105,6 +105,17 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
   try {
     await store.updateRun(runId, { startedAt: new Date() });
 
+    // ── staleness: redelivered/reordered webhooks can start runs for old pushes.
+    // The PR's CURRENT head is authoritative — a run for any other sha is stale,
+    // regardless of when its row was created (learned live: a redelivered
+    // deployment_status for an old push superseded the newer push's run).
+    const { data: livePr } = await octokit.rest.pulls.get({ owner, repo, pull_number: pr.number });
+    if (livePr.head.sha !== run.headSha) {
+      logger.info({ runId, runSha: run.headSha, currentSha: livePr.head.sha }, "run is for a stale push — cancelled");
+      await store.markSuperseded(runId, runId);
+      return;
+    }
+
     // ── supersede: a newer deployment for this PR cancels older in-flight runs ──
     const stale = await store.listActiveRunsForPr(pr.id, runId);
     for (const old of stale) {
@@ -342,8 +353,20 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     }
 
     const awaitMerged = async (jobIds: string[]): Promise<RunFlowResult> => {
-      const [m1, ...rest] = await Promise.all(jobIds.map((id) => deps.awaitFlowResult(id, timeoutMs)));
-      return mergeMeasuredResults(m1!, rest[0] ?? null);
+      // sample 1 is AUTHORITATIVE (doc 04 §4); later samples only add timing.
+      // A slow/failed 2nd sample must never fail the run — on a single-worker
+      // queue a slow flow (e.g. real payment ~3min) can push sample 2's await
+      // past the timeout; treat that as "no median available", not a crash.
+      const m1 = await deps.awaitFlowResult(jobIds[0]!, timeoutMs);
+      const rest = await Promise.all(
+        jobIds.slice(1).map((id) =>
+          deps.awaitFlowResult(id, timeoutMs).catch((err) => {
+            logger.warn({ jobId: id, err: String(err).slice(0, 120) }, "measurement sample unavailable — using sample 1 only");
+            return null;
+          }),
+        ),
+      );
+      return mergeMeasuredResults(m1, rest[0] ?? null);
     };
 
     const headStart = Date.now();
@@ -515,6 +538,13 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         label: VERDICT_LABEL[verdict],
         detail,
       });
+    }
+
+    // final ownership check: a supersede may have landed while judging ran
+    const beforeReport = await store.getRunById(runId);
+    if (!beforeReport || beforeReport.state === "cancelled") {
+      logger.info({ runId }, "run superseded during judging — not reporting");
+      return;
     }
 
     const pushNumber = await store.countRunsForPr(pr.id);
