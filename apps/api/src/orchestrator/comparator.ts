@@ -154,6 +154,16 @@ export function compareFlow(params: {
     return { verdict: "passing", detail: `${secs}s` };
   }
 
+  // an aborted (superseded) run's flows report "skipped" — never blame the PR
+  // for a run we cancelled ourselves (belt-and-braces; the orchestrator should
+  // not report superseded runs at all)
+  if (head.status === "skipped") {
+    return {
+      verdict: "env_issue",
+      detail: "run was superseded before this flow completed — see the latest push's results",
+    };
+  }
+
   if (head.status === "error" || (head.failureClass && ENV_FAILURE_CLASSES.has(head.failureClass))) {
     return {
       verdict: "env_issue",

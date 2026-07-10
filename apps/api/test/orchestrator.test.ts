@@ -319,6 +319,30 @@ describe("orchestrateRun", () => {
     expect(h.store.runs[0]!.state).toBe("done");
   });
 
+  it("a run for a stale push (PR head moved) cancels itself without executing", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    // the fake pulls.get reports head sha "headsha"; make this run's sha stale
+    h.store.runs[0]!.headSha = "oldpushsha";
+    await orchestrateRun(h.deps, "run_1");
+    expect(h.enqueued).toHaveLength(0);
+    expect(h.store.runs[0]!.state).toBe("cancelled");
+    expect(h.octo.comments).toHaveLength(0);
+  });
+
+  it("skipped (aborted) head results never render 🔴", () => {
+    const skipped = RunFlowResultSchema.parse({
+      ...result("head", "passed"),
+      status: "skipped",
+      steps: [],
+    });
+    const c = compareFlow({ spec, head: skipped, base: null, baseAvailable: false, link });
+    expect(c.verdict).toBe("env_issue");
+    expect(c.detail).toContain("superseded");
+  });
+
   it("skips runs that are not in planning (idempotent re-delivery)", async () => {
     const h = makeHarness({
       headResults: { flw_rip: result("head", "passed") },
