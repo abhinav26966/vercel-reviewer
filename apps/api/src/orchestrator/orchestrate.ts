@@ -353,8 +353,20 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     }
 
     const awaitMerged = async (jobIds: string[]): Promise<RunFlowResult> => {
-      const [m1, ...rest] = await Promise.all(jobIds.map((id) => deps.awaitFlowResult(id, timeoutMs)));
-      return mergeMeasuredResults(m1!, rest[0] ?? null);
+      // sample 1 is AUTHORITATIVE (doc 04 §4); later samples only add timing.
+      // A slow/failed 2nd sample must never fail the run — on a single-worker
+      // queue a slow flow (e.g. real payment ~3min) can push sample 2's await
+      // past the timeout; treat that as "no median available", not a crash.
+      const m1 = await deps.awaitFlowResult(jobIds[0]!, timeoutMs);
+      const rest = await Promise.all(
+        jobIds.slice(1).map((id) =>
+          deps.awaitFlowResult(id, timeoutMs).catch((err) => {
+            logger.warn({ jobId: id, err: String(err).slice(0, 120) }, "measurement sample unavailable — using sample 1 only");
+            return null;
+          }),
+        ),
+      );
+      return mergeMeasuredResults(m1, rest[0] ?? null);
     };
 
     const headStart = Date.now();
