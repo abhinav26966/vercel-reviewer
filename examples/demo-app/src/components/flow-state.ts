@@ -1,24 +1,26 @@
 /**
- * Inline version of the optional FlowGuard state SDK (doc 04 §6).
- * Phase 12 replaces this with the published @flowguard/state package.
+ * Demo integration of the published FlowGuard state SDK (doc 04 §6).
+ *
+ * The SDK exposure is gated on NEXT_PUBLIC_FLOWGUARD_SDK so the Phase-12 AC can
+ * flip it off (vision-only path) and on (state-read path) via an env var + a
+ * redeploy — no code change. Off ⇒ window.__flowState is never set, so
+ * FlowGuard's `state` assertions skip and their paired `vision` assertions
+ * cover; on ⇒ assertions read exact state.
  */
-export interface FlowState {
-  packOpened: boolean;
-  cardsRevealed: number;
-}
+import { flowState } from "@flowguard/state";
 
-declare global {
-  interface Window {
-    __flowState?: FlowState;
-  }
+function sdkEnabled(): boolean {
+  // default ON; "0" disables (the "SDK removed" AC variant)
+  return process.env.NEXT_PUBLIC_FLOWGUARD_SDK !== "0";
 }
 
 export function initFlowState(): void {
-  window.__flowState = { packOpened: false, cardsRevealed: 0 };
+  if (!sdkEnabled()) return;
+  flowState.set({ packOpened: false, cardsRevealed: 0 });
 }
 
-export function setFlowState(patch: Partial<FlowState>): void {
-  const prev = window.__flowState ?? { packOpened: false, cardsRevealed: 0 };
-  window.__flowState = { ...prev, ...patch };
-  window.dispatchEvent(new CustomEvent("flowguard", { detail: window.__flowState }));
+export function setFlowState(patch: { packOpened?: boolean; cardsRevealed?: number }): void {
+  if (!sdkEnabled()) return;
+  flowState.set(patch);
+  if (patch.packOpened) flowState.event("pack_opened");
 }

@@ -118,7 +118,7 @@ describe("dom assertions", () => {
     ).toBe(true);
   });
 
-  it("unsupported kinds report their phase instead of crashing", async () => {
+  it("vision assertion without an inference backend fails honestly (never passes)", async () => {
     const r = await evalAssertion(page, {
       kind: "vision",
       question: "how many cards?",
@@ -126,7 +126,109 @@ describe("dom assertions", () => {
       value: 5,
     });
     expect(r.pass).toBe(false);
+    expect(r.message).toContain("inference backend");
+  });
+
+  it("still-unimplemented kinds (delta) report their phase instead of crashing", async () => {
+    const r = await evalAssertion(page, {
+      kind: "delta",
+      metric: "count",
+      locators: [
+        { kind: "testid", value: "x" },
+        { kind: "css", value: ".x" },
+      ],
+      assert: "increasedBy",
+      value: 1,
+    } as never);
+    expect(r.pass).toBe(false);
     expect(r.message).toContain("later phase");
+  });
+});
+
+describe("state assertions (doc 04 §6)", () => {
+  it("reads window.__flowState and compares exactly", async () => {
+    await page.evaluate(() => {
+      (window as unknown as { __flowState: unknown }).__flowState = { cardsRevealed: 5, packOpened: true };
+    });
+    const pass = await evalAssertion(page, {
+      kind: "state",
+      read: "window.__flowState.cardsRevealed",
+      assert: "equals",
+      value: 5,
+    } as never);
+    expect(pass.pass).toBe(true);
+
+    const fail = await evalAssertion(page, {
+      kind: "state",
+      read: "window.__flowState.cardsRevealed",
+      assert: "equals",
+      value: 3,
+    } as never);
+    expect(fail.pass).toBe(false);
+    expect(fail.message).toContain("!== 3");
+  });
+
+  it("optional state assertion SKIPS when the hook is absent (vision covers)", async () => {
+    await page.evaluate(() => {
+      delete (window as unknown as { __flowState?: unknown }).__flowState;
+    });
+    const r = await evalAssertion(page, {
+      kind: "state",
+      read: "window.__flowState.cardsRevealed",
+      assert: "equals",
+      value: 5,
+      optional: true,
+    } as never);
+    expect(r.pass).toBe(true);
+    expect(r.skipped).toBe(true);
+  });
+
+  it("non-optional state assertion FAILS when the hook is absent", async () => {
+    const r = await evalAssertion(page, {
+      kind: "state",
+      read: "window.__flowState.cardsRevealed",
+      assert: "equals",
+      value: 5,
+    } as never);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("not exposed");
+  });
+});
+
+describe("vision assertions with a scripted provider", () => {
+  const provider = (answer: string | number | boolean, confidence = 0.9) =>
+    ({
+      visionAnalyze: async () => ({ result: { answer, confidence }, usage: { model: "fake", promptTokens: 0, completionTokens: 0 } }),
+      groundElement: async () => ({ result: null, usage: { model: "fake", promptTokens: 0, completionTokens: 0 } }),
+      judge: async () => ({ result: {} as never, usage: { model: "fake", promptTokens: 0, completionTokens: 0 } }),
+    }) as never;
+
+  it("equals on a number the model reports", async () => {
+    const r = await evalAssertion(
+      page,
+      { kind: "vision", question: "how many cards are revealed?", assert: "equals", value: 5 } as never,
+      { shot: Buffer.from("x"), ctx: { inference: provider(5) } },
+    );
+    expect(r.pass).toBe(true);
+  });
+
+  it("fails when the model's answer disagrees (0 cards, expected 5)", async () => {
+    const r = await evalAssertion(
+      page,
+      { kind: "vision", question: "how many cards are revealed?", assert: "equals", value: 5 } as never,
+      { shot: Buffer.from("x"), ctx: { inference: provider(0) } },
+    );
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("expected equals 5");
+  });
+
+  it("yesno maps truthy answers to a boolean expectation", async () => {
+    const r = await evalAssertion(
+      page,
+      { kind: "vision", question: "is a card visible?", assert: "yesno", value: true } as never,
+      { shot: Buffer.from("x"), ctx: { inference: provider("yes") } },
+    );
+    expect(r.pass).toBe(true);
   });
 });
 

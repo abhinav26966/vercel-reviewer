@@ -95,11 +95,16 @@ async function waitForReturnToApp(page: Page, provider: PaymentProvider, _baseUr
     return provider.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`));
   };
   // give the provider→confirm→app redirect chain a beat to start, then wait
-  // until the main frame has LEFT the provider surface
+  // until the main frame has LEFT the provider surface AND the app page's own
+  // scripts have settled. Provider SDKs (Stripe's apple-pay long-poll) can keep
+  // networkidle from ever firing, so cap that wait and don't let it block —
+  // the next step ran mid-redirect before this existed (learned live).
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!onProvider()) {
       await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+      // best-effort quiescence — bounded so a never-idle provider SDK can't hang us
+      await page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => {});
       return;
     }
     await page.waitForTimeout(500);

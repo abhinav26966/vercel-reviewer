@@ -73,6 +73,16 @@ export default function OpenClient({
       <div className="canvas-wrap">
         <PackScene phase={phase} onPackClick={handlePackClick} onRipComplete={handleRipComplete} />
       </div>
+      {phase === "revealed" ? (
+        <div className="grid" data-testid="revealed-cards">
+          {Array.from({ length: 5 }, (_, i) => (
+            <div className="pack-tile" data-testid="revealed-card" key={i}>
+              <h3>Card {i + 1}</h3>
+              <p className="muted">revealed</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
