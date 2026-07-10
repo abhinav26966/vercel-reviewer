@@ -41,7 +41,7 @@ const CHECKOUT_FORM = `
 
 describe("StripeProvider.detectTestMode — the live-mode guard (doc 07 §6)", () => {
   it("pk_test_ in page context → test mode confirmed", async () => {
-    await page.goto(`data:text/html,<script>var k="pk_test_abc123"</script><p>checkout</p>`);
+    await page.goto(`data:text/html,<script>var k="pk_test_abc123def456ghi789jkl"</script><p>checkout</p>`);
     expect(await stripe.detectTestMode(page)).toBe(true);
   });
 
@@ -51,7 +51,7 @@ describe("StripeProvider.detectTestMode — the live-mode guard (doc 07 §6)", (
   });
 
   it("pk_live_ anywhere → LIVE, even when test signals coexist (live wins)", async () => {
-    await page.goto(`data:text/html,<script>var a="pk_live_x",b="pk_test_y"</script>`);
+    await page.goto(`data:text/html,<script>var a="pk_live_abc123def456ghi789jkl",b="pk_test_abc123def456ghi789jkl"</script>`);
     expect(await stripe.detectTestMode(page)).toBe(false);
   });
 
@@ -83,14 +83,14 @@ describe("executePaymentStep — guard order is non-negotiable", () => {
 
   it("LIVE signals → refused with the live-mode message", async () => {
     await page.goto(
-      `data:text/html,<iframe src="https://js.stripe.com/v3/f.html" style="display:none"></iframe><script>var k="pk_live_abc"</script>${CHECKOUT_FORM}`,
+      `data:text/html,<iframe src="https://js.stripe.com/v3/f.html" style="display:none"></iframe><script>var k="pk_live_abc123def456ghi789jkl"</script>${CHECKOUT_FORM}`,
     );
     await expect(executePaymentStep(ctx(), action)).rejects.toThrow(/LIVE-mode signals/);
   });
 
   it("test mode confirmed → fills the hosted-checkout form and submits", async () => {
     await page.goto(
-      `data:text/html,<iframe src="https://js.stripe.com/v3/f.html" style="display:none"></iframe><script>var k="pk_test_abc"</script>${CHECKOUT_FORM}<div id="paid" style="display:none">paid</div><script>document.querySelector("button").addEventListener("click",function(e){e.preventDefault();document.getElementById("paid").style.display="block"})</script>`,
+      `data:text/html,<iframe src="https://js.stripe.com/v3/f.html" style="display:none"></iframe><script>var k="pk_test_abc123def456ghi789jkl"</script>${CHECKOUT_FORM}<div id="paid" style="display:none">paid</div><script>document.querySelector("button").addEventListener("click",function(e){e.preventDefault();document.getElementById("paid").style.display="block"})</script>`,
     );
     await executePaymentStep(ctx(), action);
     expect(await page.locator('[name="cardNumber"]').inputValue()).toBe("4242424242424242");

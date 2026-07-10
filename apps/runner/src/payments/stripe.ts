@@ -24,20 +24,24 @@ export class StripeProvider implements PaymentProvider {
   readonly frameAllowlist = STRIPE_FRAME_ALLOWLIST;
 
   /**
-   * Positive confirmation of test mode, live signals checked FIRST (a page
-   * carrying both is treated as live → fail closed):
-   *   cs_live_/pk_live_ anywhere → false
-   *   cs_test_ in the URL, pk_test_ in page context, or the Checkout
-   *   test-mode badge → true
-   *   nothing recognizable → null (⇒ payment_unverified_env)
+   * Positive confirmation of test mode.
+   *
+   * Signal precedence (learned live): the checkout session id in the URL is
+   * AUTHORITATIVE — a cs_test_ session cannot charge, period. Page-content
+   * scans must match FULL key shapes (pk_live_<24+ alnum>), because Stripe's
+   * own JavaScript contains "pk_live" as a bare code literal on every page.
+   * Within content, live signals still beat test signals; nothing
+   * recognizable → null (⇒ payment_unverified_env, fail closed).
    */
   async detectTestMode(page: Page): Promise<TestModeVerdict> {
+    const LIVE_KEY = /(?:pk|cs|sk)_live_[A-Za-z0-9]{16,}/;
+    const TEST_KEY = /(?:pk|cs|sk)_test_[A-Za-z0-9]{16,}/;
     const url = page.url();
-    if (/cs_live_|pk_live_/.test(url)) return false;
+    if (/cs_live_[A-Za-z0-9]/.test(url)) return false;
+    if (/cs_test_[A-Za-z0-9]/.test(url)) return true;
     const html = await page.content().catch(() => "");
-    if (/pk_live_|cs_live_/.test(html)) return false;
-    if (/cs_test_/.test(url)) return true;
-    if (/pk_test_|cs_test_/.test(html)) return true;
+    if (LIVE_KEY.test(html)) return false;
+    if (TEST_KEY.test(html)) return true;
     const badge = await page
       .getByText(/test mode/i)
       .count()
