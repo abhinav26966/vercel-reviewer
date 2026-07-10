@@ -74,13 +74,16 @@ export default function OpenClient({
         <PackScene phase={phase} onPackClick={handlePackClick} onRipComplete={handleRipComplete} />
       </div>
       {phase === "revealed" ? (
-        <div className="grid" data-testid="revealed-cards">
-          {Array.from({ length: 5 }, (_, i) => (
-            <div className="pack-tile" data-testid="revealed-card" key={i}>
-              <h3>Card {i + 1}</h3>
-              <p className="muted">revealed</p>
-            </div>
-          ))}
+        <div data-testid="revealed-cards">
+          <h2 data-testid="reveal-count">5 cards revealed</h2>
+          <div className="grid">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div className="pack-tile" data-testid="revealed-card" key={i}>
+                <h3>Card {i + 1}</h3>
+                <p className="muted">revealed</p>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
