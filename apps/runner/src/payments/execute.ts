@@ -19,6 +19,17 @@ export class PaymentUnverifiedError extends Error {
   }
 }
 
+/** The provider gated checkout behind a CAPTCHA (doc 07 §7 — a v1 wall). */
+export class PaymentCaptchaError extends Error {
+  constructor() {
+    super(
+      "payment provider presented a CAPTCHA on checkout — FlowGuard never attempts to solve CAPTCHAs. " +
+        "Use Stripe test keys with Radar/bot-protection disabled on preview deployments, or the non-3DS card variant.",
+    );
+    this.name = "PaymentCaptchaError";
+  }
+}
+
 const PROVIDERS: Record<string, PaymentProvider> = {
   stripe: new StripeProvider(),
 };

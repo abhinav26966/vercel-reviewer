@@ -1,5 +1,6 @@
 import type { FrameLocator, Page } from "playwright";
 import type { PaymentCard, PaymentProvider, TestModeVerdict } from "./provider.js";
+import { PaymentCaptchaError } from "./execute.js";
 
 /**
  * Stripe module (doc 07 §6): hosted Checkout first (the demo-app path —
@@ -80,6 +81,11 @@ export class StripeProvider implements PaymentProvider {
    * (`#test-source-authorize-3ds` on older flows). Frames nest unpredictably —
    * poll every frame on an allowlisted Stripe host.
    */
+  /** A bot-protection CAPTCHA on the checkout surface (doc 07 §7 — never beat). */
+  detectCaptcha(page: Page): boolean {
+    return page.frames().some((f) => /hcaptcha\.com|recaptcha|google\.com\/recaptcha|challenges\.cloudflare\.com|turnstile/i.test(f.url()));
+  }
+
   async handleChallenge(page: Page): Promise<void> {
     const deadline = Date.now() + 45_000;
     // the completion control lives in a nested challenge frame; button text
@@ -114,8 +120,12 @@ export class StripeProvider implements PaymentProvider {
         return host === h || host.endsWith(`.${h}`);
       });
       if (!onProvider && Date.now() > deadline - 40_000) return;
+      if (this.detectCaptcha(page)) {
+        throw new PaymentCaptchaError();
+      }
       await page.waitForTimeout(1000);
     }
+    if (this.detectCaptcha(page)) throw new PaymentCaptchaError();
     throw new Error("stripe: 3DS challenge frame never presented a completion button");
   }
 

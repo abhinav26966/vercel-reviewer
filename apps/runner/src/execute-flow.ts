@@ -271,6 +271,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           }
         } else {
           outcome = "failed";
+          // surface the specific payment env message in the verdict (doc 07 §6/§7)
+          if (attempt.failure.failureClass === "payment_unverified_env") {
+            failureDetail = attempt.failure.message;
+          }
         }
         break; // subsequent steps are skipped (doc 04 §3)
       }

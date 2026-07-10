@@ -117,6 +117,20 @@ describe("executePaymentStep — guard order is non-negotiable", () => {
   }, 30_000);
 });
 
+describe("CAPTCHA wall (doc 07 §7)", () => {
+  it("a checkout carrying an hCaptcha frame is detected", async () => {
+    await page.goto(
+      `data:text/html,<iframe src="https://newassets.hcaptcha.com/captcha/v1/abc/index.html"></iframe>`,
+    );
+    expect(stripe.detectCaptcha(page)).toBe(true);
+  });
+
+  it("a plain checkout page is not flagged", async () => {
+    await page.goto(`data:text/html,<iframe src="https://js.stripe.com/v3/frame.html"></iframe>${CHECKOUT_FORM}`);
+    expect(stripe.detectCaptcha(page)).toBe(false);
+  });
+});
+
 describe("3DS test-card set", () => {
   it("contains the documented challenge cards", () => {
     expect(STRIPE_3DS_TEST_CARDS.has("4000002760003155")).toBe(true);

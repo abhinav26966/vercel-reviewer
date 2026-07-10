@@ -232,7 +232,8 @@ function envCopy(head: RunFlowResult, credentialsUrl?: string): string {
     return `login failed on this preview: credentials may be wrong, or this PR may use a separate database${fix}`;
   }
   if (head.failureClass === "payment_unverified_env") {
-    return "payment step skipped — could not verify test mode on this preview";
+    // the runner threads the specific reason (live-mode guard vs CAPTCHA wall) here
+    return head.diagnostics.failureDetail ?? "payment step skipped — could not verify test mode on this preview";
   }
   return "deployment unreachable or environment problem — not a flow failure";
 }
