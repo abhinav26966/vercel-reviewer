@@ -2,7 +2,54 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 11 — Payments (Stripe) — ✅ 5/6 AC live-proven (2026-07-10); webhook-attribution logic proven at unit level, live repro blocked by post-checkout page flake. Ready for PR review.**
+## Current phase: **Phase 12 — Canvas/WebGL + state SDK — code complete + fully unit/integration-tested (2026-07-10); live AC staged for post-merge. PR #19 up.**
+
+### Phase 12 state
+
+Implementation complete; all gates green (11 packages, ~240 tests incl. new
+state-SDK, state/vision assertion, flowEvent/animationQuiescence settle, and
+canvas-grounding suites). Committed on branch phase-12.
+
+Built:
+- **@flowguard/state** — publishable one-line SDK (`flowState.set/get/event/
+  subscribe/seed`), `window.__flowState` + `flowguard` CustomEvent contract,
+  `__flowguard_seed` RNG hook; jsdom-tested (packages/state).
+- runner **assertions**: `state` (window-path read, exact compare, `optional`
+  → skip so a paired `vision` assertion covers) and `vision` (settle
+  screenshot → structured model answer → compare; no backend/shot ⇒ honest
+  fail, NEVER a pass — the "AI never fabricates green" rule).
+- runner **settle**: `flowEvent` (await named milestone), `animationQuiescence`
+  (frame-diff sampling until K stable frames), `networkidle+animation`.
+- runner **canvasClick vision grounding** (`groundElement`, confidence-gated
+  at 0.6 → `grounding_failed` honest failure when it can't place the target).
+- **WebGL smoke check** at flow start for canvas specs → env_issue (not a
+  mystery flow failure) if the runner lacks a WebGL context.
+- payment return-to-app settle now also waits bounded network quiescence
+  (the deferred Phase 11 robustness item — folded in here).
+- demo: `@flowguard/state` gated on `NEXT_PUBLIC_FLOWGUARD_SDK` (AC toggle),
+  renders visible `revealed-card` tiles for vision counting.
+
+**Live AC — staged, needs post-merge setup:**
+1. Author a rip-flow spec version whose canvas-outcome step carries BOTH an
+   `optional` state assertion (`window.__flowState.cardsRevealed == 5`) AND a
+   paired `vision` assertion ("how many cards are revealed?" equals 5).
+   (Script writes the version + validate→promote, like Phase 11's confirm.)
+2. `NEXT_PUBLIC_FLOWGUARD_SDK=0` preview → rip passes via VISION only (state
+   skipped); result shows vision assertions. Flip to `=1` → same step passes
+   via STATE read (visible in the result).
+3. `?break=rip` → step-level 🔴 via vision ("0 cards revealed, expected 5").
+4. Move the pack position (point becomes stale / cleared + visionFallback) →
+   grounding fallback places the click, flow still passes, drift note.
+
+⚠️ **Live-AC risk (call it honestly):** the vision-assertion path depends on
+the FREE OpenRouter vision models answering "how many cards" reliably with
+structured output — the exact thing that was flaky in Phase 6 (compiler vision
+pass). The CODE is proven via scripted-provider tests; the live vision result
+may reflect model quality, not code. If the free model can't count reliably,
+the honest outcome is 🟣/grounding_failed, and the state-read path (SDK on) is
+the deterministic answer — which is the whole point of the two-tier design.
+
+### Phase 11 — ✅ 5/6 AC live-proven (2026-07-10); webhook logic unit-proven, live repro folded into Phase 12 payment-return settle fix. Merged (#18).
 
 ### Phase 11 AC results (live, PR #17 + env chaos + real Stripe test mode)
 
