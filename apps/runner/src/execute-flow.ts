@@ -259,7 +259,10 @@ export async function executeFlow(opts: ExecuteFlowOptions): Promise<RunFlowResu
           nextErrorOverlay,
           blankScreenScore: blankScore,
         });
-        if (attempt.failure.failureClass === "assertion" || cls.status === "dead") {
+        // env-class failures stay env: a half-loaded/mid-redirect page LOOKS
+        // blank, and "deployment unreachable" must never become "your app died"
+        const envClass = attempt.failure.failureClass === "env" || attempt.failure.failureClass === "payment_unverified_env";
+        if (!envClass && (attempt.failure.failureClass === "assertion" || cls.status === "dead")) {
           outcome = cls.status;
           failureClassOverride = cls.failureClass;
           failureDetail = cls.detail;
