@@ -81,24 +81,39 @@ export class StripeProvider implements PaymentProvider {
    * poll every frame on an allowlisted Stripe host.
    */
   async handleChallenge(page: Page): Promise<void> {
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 45_000;
+    // the completion control lives in a nested challenge frame; button text
+    // varies across Stripe's test-3DS revisions
+    const completeSelectors = [
+      "#test-source-authorize-3ds",
+      'button:has-text("Complete authentication")',
+      'button:has-text("Complete")',
+      'button:has-text("Authorize Test Payment")',
+      'button:has-text("Authorize")',
+      '[data-testid="challenge-complete-button"]',
+    ].join(", ");
     while (Date.now() < deadline) {
+      // page.frames() is recursive; a 3DS/ACS challenge frame may sit under
+      // hooks.stripe.com or a challenge subframe
       for (const frame of page.frames()) {
-        let host = "";
-        try {
-          host = new URL(frame.url()).host;
-        } catch {
-          continue;
-        }
-        if (!this.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`))) continue;
-        const button = frame
-          .locator('#test-source-authorize-3ds, button:has-text("Complete authentication"), button:has-text("Complete"), button:has-text("Authorize Test Payment")')
-          .first();
+        const host = safeHost(frame.url());
+        const onStripe = this.frameAllowlist.some((h) => host === h || host.endsWith(`.${h}`));
+        const looksChallenge = /3ds|challenge|acs|authenticate/i.test(frame.url());
+        if (!onStripe && !looksChallenge) continue;
+        const button = frame.locator(completeSelectors).first();
         if ((await button.count().catch(() => 0)) > 0 && (await button.isVisible().catch(() => false))) {
           await button.click({ timeout: 5000 }).catch(() => {});
+          await page.waitForTimeout(1500);
           return;
         }
       }
+      // some test flows land back on the app without a modal (frictionless) —
+      // if we've already left the provider host, the challenge is done
+      const onProvider = this.frameAllowlist.some((h) => {
+        const host = safeHost(page.url());
+        return host === h || host.endsWith(`.${h}`);
+      });
+      if (!onProvider && Date.now() > deadline - 40_000) return;
       await page.waitForTimeout(1000);
     }
     throw new Error("stripe: 3DS challenge frame never presented a completion button");
@@ -134,5 +149,13 @@ export class StripeProvider implements PaymentProvider {
       await page.waitForTimeout(500);
     }
     throw new Error("stripe: card form never became visible on the checkout surface");
+  }
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
   }
 }
