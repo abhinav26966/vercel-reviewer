@@ -4,7 +4,6 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { useRef, useState } from "react";
 import * as THREE from "three";
 import type { OpenPhase } from "./OpenClient";
-import { setFlowState } from "./flow-state";
 
 const CARD_COLORS = ["#e05252", "#52a7e0", "#5ee068", "#e0c052", "#b06ee0"];
 const RIP_DURATION = 0.9; // seconds of pack burst animation
@@ -66,7 +65,8 @@ function Cards() {
     const target = Math.min(CARD_COLORS.length, Math.floor(t / CARD_REVEAL_EVERY) + 1);
     if (target > revealed) {
       setRevealed(target);
-      setFlowState({ cardsRevealed: target });
+      // state exposure is centralized in OpenClient.handleRipComplete so the
+      // runtime SDK toggle (?nosdk=1) can suppress it in one place
     }
   });
 

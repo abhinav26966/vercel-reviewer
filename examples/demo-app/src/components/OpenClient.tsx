@@ -15,9 +15,11 @@ export type OpenPhase = "idle" | "ripping" | "revealed";
 export default function OpenClient({
   initialPacks,
   breakFlag,
+  sdkDisabled = false,
 }: {
   initialPacks: number;
   breakFlag: string | null;
+  sdkDisabled?: boolean;
 }) {
   const [phase, setPhase] = useState<OpenPhase>("idle");
   const [packs, setPacks] = useState(initialPacks);
@@ -25,8 +27,8 @@ export default function OpenClient({
   const busy = useRef(false);
 
   useEffect(() => {
-    initFlowState();
-  }, []);
+    if (!sdkDisabled) initFlowState();
+  }, [sdkDisabled]);
 
   async function handlePackClick() {
     if (phase !== "idle" || busy.current) return;
@@ -51,7 +53,7 @@ export default function OpenClient({
   }
 
   function handleRipComplete() {
-    setFlowState({ packOpened: true });
+    if (!sdkDisabled) setFlowState({ packOpened: true, cardsRevealed: 5 });
     setPhase("revealed");
   }
 
