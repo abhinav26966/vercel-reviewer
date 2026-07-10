@@ -15,9 +15,11 @@ export type OpenPhase = "idle" | "ripping" | "revealed";
 export default function OpenClient({
   initialPacks,
   breakFlag,
+  sdkDisabled = false,
 }: {
   initialPacks: number;
   breakFlag: string | null;
+  sdkDisabled?: boolean;
 }) {
   const [phase, setPhase] = useState<OpenPhase>("idle");
   const [packs, setPacks] = useState(initialPacks);
@@ -25,8 +27,8 @@ export default function OpenClient({
   const busy = useRef(false);
 
   useEffect(() => {
-    initFlowState();
-  }, []);
+    if (!sdkDisabled) initFlowState();
+  }, [sdkDisabled]);
 
   async function handlePackClick() {
     if (phase !== "idle" || busy.current) return;
@@ -51,7 +53,7 @@ export default function OpenClient({
   }
 
   function handleRipComplete() {
-    setFlowState({ packOpened: true });
+    if (!sdkDisabled) setFlowState({ packOpened: true, cardsRevealed: 5 });
     setPhase("revealed");
   }
 
@@ -74,13 +76,16 @@ export default function OpenClient({
         <PackScene phase={phase} onPackClick={handlePackClick} onRipComplete={handleRipComplete} />
       </div>
       {phase === "revealed" ? (
-        <div className="grid" data-testid="revealed-cards">
-          {Array.from({ length: 5 }, (_, i) => (
-            <div className="pack-tile" data-testid="revealed-card" key={i}>
-              <h3>Card {i + 1}</h3>
-              <p className="muted">revealed</p>
-            </div>
-          ))}
+        <div data-testid="revealed-cards">
+          <h2 data-testid="reveal-count">5 cards revealed</h2>
+          <div className="grid">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div className="pack-tile" data-testid="revealed-card" key={i}>
+                <h3>Card {i + 1}</h3>
+                <p className="muted">revealed</p>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
