@@ -17,6 +17,8 @@ export interface FlowReviewComment {
   previewHost: string;
   rows: FlowReviewRow[];
   runDetails: string;
+  /** Dashboard link for "this verdict was wrong" (doc 09 Phase 13). */
+  reportUrl?: string;
 }
 
 export function renderFlowReviewComment(c: FlowReviewComment): string {
@@ -35,6 +37,7 @@ export function renderFlowReviewComment(c: FlowReviewComment): string {
     ``,
     c.runDetails,
     `</details>`,
+    ...(c.reportUrl ? [``, `<sub>A verdict looks wrong? [Report it](${c.reportUrl}) — false positives are the one thing we never ship.</sub>`] : []),
   ];
   return lines.join("\n");
 }

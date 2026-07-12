@@ -38,3 +38,29 @@ export function createInferenceFromEnv(opts?: {
     ...(opts?.logSink ? { logSink: opts.logSink } : {}),
   });
 }
+
+/**
+ * Bring-your-own inference (doc 09 Phase 13): build a provider from an explicit
+ * key + per-capability model chains. Empty model chains fall back to the
+ * platform defaults, so a project can override only what it cares about (e.g.
+ * point vision at Claude, leave judging on the free tier).
+ */
+export function createInference(config: {
+  apiKey: string;
+  baseUrl?: string | null;
+  analyzeModels?: string[];
+  groundingModels?: string[];
+  judgeModels?: string[];
+  logSink?: InferenceLogSink;
+}): OpenAICompatProvider {
+  const orDefault = (chain: string[] | undefined, fallback: string[]) =>
+    chain && chain.length > 0 ? chain : fallback;
+  return new OpenAICompatProvider({
+    baseUrl: config.baseUrl || "https://openrouter.ai/api/v1",
+    apiKey: config.apiKey,
+    analyzeModels: orDefault(config.analyzeModels, DEFAULT_ANALYZE_MODELS),
+    groundingModels: orDefault(config.groundingModels, DEFAULT_GROUNDING_MODELS),
+    judgeModels: orDefault(config.judgeModels, DEFAULT_JUDGE_MODELS),
+    ...(config.logSink ? { logSink: config.logSink } : {}),
+  });
+}

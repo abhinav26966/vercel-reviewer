@@ -323,6 +323,64 @@ export class FakeStore implements Store {
       .map((f) => ({ id: f.flowId, name: f.flowName, tier: f.tier, archived: false }));
   }
 
+  // ── Phase 13 ─────────────────────────────────────────────────────────────
+  verdictReportRows: Array<{ id: string; verdictId: string; projectId: string | null; flowId: string | null; reportedVerdict: string; reason: string | null; createdAt: Date }> = [];
+  usageRows: Array<{ projectId: string; runId: string | null; kind: string; amount: number; model: string | null; createdAt: Date }> = [];
+  projectSettingsPatches: Array<{ projectId: string; patch: Record<string, unknown> }> = [];
+
+  async updateProjectSettings(projectId: string, patch: Record<string, unknown>) {
+    this.projectSettingsPatches.push({ projectId, patch });
+    const p = this.projects.find((x) => x.id === projectId);
+    if (p) p.settings = { ...(p.settings ?? {}), ...patch };
+  }
+
+  async createVerdictReport(input: { verdictId: string; reason: string | null; reportedBy: string | null }) {
+    const v = this.verdicts.find((x) => x.id === input.verdictId);
+    if (!v) return null;
+    const run = v.runId ? this.runs.find((r) => r.id === v.runId) : null;
+    const id = this.id("vrp");
+    this.verdictReportRows.push({ id, verdictId: v.id!, projectId: run?.projectId ?? null, flowId: v.flowId, reportedVerdict: v.verdict, reason: input.reason, createdAt: new Date() });
+    return { id };
+  }
+
+  async listVerdictReports(projectId: string) {
+    return this.verdictReportRows
+      .filter((r) => r.projectId === projectId)
+      .map((r) => ({ id: r.id, verdictId: r.verdictId, flowId: r.flowId, reportedVerdict: r.reportedVerdict, reason: r.reason, createdAt: r.createdAt }));
+  }
+
+  async recordUsage(input: { projectId: string; runId?: string | null; kind: string; amount: number; model?: string | null }) {
+    this.usageRows.push({ projectId: input.projectId, runId: input.runId ?? null, kind: input.kind, amount: input.amount, model: input.model ?? null, createdAt: new Date() });
+  }
+
+  async aggregateUsage(projectId: string) {
+    const rows = this.usageRows.filter((r) => r.projectId === projectId);
+    const sum = (k: string) => rows.filter((r) => r.kind === k).reduce((a, r) => a + r.amount, 0);
+    return { runs: sum("run"), runnerMs: sum("runner_ms"), inferenceTokens: sum("inference_tokens") };
+  }
+
+  async countActiveRunsForProject(projectId: string) {
+    const active = ["awaiting_deployment", "planning", "resolving_base", "executing", "judging", "reporting"];
+    return this.runs.filter((r) => r.projectId === projectId && active.includes(r.state)).length;
+  }
+
+  async platformMetrics() {
+    const dist: Record<string, number> = {};
+    for (const v of this.verdicts) dist[v.verdict] = (dist[v.verdict] ?? 0) + 1;
+    return { verdictDistribution: dist, healAttempts: 0, healSucceeded: 0, verdictReports: this.verdictReportRows.length, totalVerdicts: this.verdicts.length, runDurations: [] as number[] };
+  }
+
+  async onboardingStatus(projectId: string) {
+    const p = this.projects.find((x) => x.id === projectId);
+    return {
+      githubInstalled: Boolean(p?.installationId),
+      vercelBound: Boolean(p?.vercelProjectId && p?.vercelTokenRef),
+      credentialsSet: this.credentialSets.some((c) => c.projectId === projectId),
+      firstFlowRecorded: this.officialFlows.some((f) => f.projectId === projectId),
+      firstRunCompleted: this.runs.some((r) => r.projectId === projectId && r.state === "done"),
+    };
+  }
+
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   recordings: Array<{
     id: string;

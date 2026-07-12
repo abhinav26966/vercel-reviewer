@@ -21,6 +21,8 @@ export interface QueueBundle {
   removeQueuedJob: (jobId: string) => Promise<void>;
   setAbortKey: (runId: string) => Promise<void>;
   enqueueOrchestration: (runId: string) => Promise<void>;
+  /** Re-enqueue an orchestration after a delay (per-project concurrency backoff). */
+  deferOrchestration: (runId: string, delayMs: number) => Promise<void>;
   enqueueControl: (job: ControlJob) => Promise<void>;
   /** Repeatable cron jobs (doc 06 §6): nightly base runs, hourly sweep, daily purge. */
   registerSchedules: () => Promise<void>;
@@ -73,6 +75,13 @@ export function createQueues(redisUrl: string, logger: Logger): QueueBundle {
         "orchestrate-run",
         { kind: "run", runId } satisfies ControlJob,
         { jobId: `orch-${runId}-${Date.now()}`, removeOnComplete: true, removeOnFail: { age: 3600 } },
+      );
+    },
+    async deferOrchestration(runId, delayMs) {
+      await orchestrateQueue.add(
+        "orchestrate-run",
+        { kind: "run", runId } satisfies ControlJob,
+        { jobId: `orch-${runId}-defer-${Date.now()}`, delay: delayMs, removeOnComplete: true, removeOnFail: { age: 3600 } },
       );
     },
     async enqueueControl(job) {

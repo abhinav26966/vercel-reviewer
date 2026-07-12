@@ -65,6 +65,27 @@ interface AlertRow {
   createdAt: string;
 }
 
+interface OnboardingStatus {
+  complete: boolean;
+  steps: Array<{ key: string; label: string; done: boolean }>;
+}
+
+interface UsageSummary {
+  sinceDays: number;
+  runs: number;
+  runnerMinutes: number;
+  inferenceTokens: number;
+}
+
+interface VerdictReport {
+  id: string;
+  verdictId: string;
+  flowId: string | null;
+  reportedVerdict: string;
+  reason: string | null;
+  createdAt: string;
+}
+
 interface PaymentConfigRow {
   id: string;
   scope: string;
@@ -88,6 +109,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [recordings, setRecordings] = useState<RecordingRow[]>([]);
+  const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [reports, setReports] = useState<VerdictReport[]>([]);
+  const [byoKey, setByoKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({
     scope: "project",
@@ -107,6 +132,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     api<RunRow[]>(`/api/projects/${id}/runs`).then(setRuns).catch(() => {});
     api<DraftRow[]>(`/api/projects/${id}/drafts`).then(setDrafts).catch(() => {});
     api<RecordingRow[]>(`/api/projects/${id}/recordings`).then(setRecordings).catch(() => {});
+    api<OnboardingStatus>(`/api/projects/${id}/onboarding`).then(setOnboarding).catch(() => {});
+    api<UsageSummary>(`/api/projects/${id}/usage`).then(setUsage).catch(() => {});
+    api<VerdictReport[]>(`/api/projects/${id}/verdict-reports`).then(setReports).catch(() => {});
   }, [id]);
   useEffect(refresh, [refresh]);
 
@@ -164,6 +192,91 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     <main>
       <h1>Project {id}</h1>
       {error ? <p className="error">{error}</p> : null}
+
+      {onboarding && !onboarding.complete ? (
+        <section data-testid="onboarding">
+          <h2>Getting started</h2>
+          <ul>
+            {onboarding.steps.map((s) => (
+              <li key={s.key}>
+                {s.done ? "✅" : "⬜"} {s.label}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <h2>Usage (last 30 days)</h2>
+      <p className="muted" data-testid="usage">
+        {usage
+          ? `${usage.runs} runs · ${usage.runnerMinutes} runner-minutes · ${usage.inferenceTokens.toLocaleString()} inference tokens`
+          : "—"}
+      </p>
+
+      <h2>Inference (bring your own model)</h2>
+      <p className="muted">
+        Optional. Supply your own provider key so vision/judge quality is your cost. Leave blank to use the platform
+        default (free models). Stored encrypted in the vault.
+      </p>
+      <form
+        className="row"
+        data-testid="byo-form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setError(null);
+          try {
+            await api(`/api/projects/${id}/inference`, {
+              method: "PUT",
+              body: JSON.stringify({ apiKey: byoKey, groundingModels: ["anthropic/claude-haiku-4.5"], analyzeModels: ["anthropic/claude-haiku-4.5"] }),
+            });
+            setByoKey("");
+            refresh();
+          } catch (err) {
+            setError(String(err));
+          }
+        }}
+      >
+        <input
+          type="password"
+          placeholder="provider API key (e.g. sk-or-…)"
+          data-testid="byo-key"
+          value={byoKey}
+          onChange={(e) => setByoKey(e.target.value)}
+        />
+        <button type="submit" data-testid="byo-save">
+          Save key
+        </button>
+        <button
+          type="button"
+          className="danger"
+          onClick={async () => {
+            await api(`/api/projects/${id}/inference`, { method: "PUT", body: JSON.stringify({ clear: true }) });
+            refresh();
+          }}
+        >
+          Clear
+        </button>
+      </form>
+
+      <h2 id="reports">Verdict reports (false positives)</h2>
+      <table>
+        <tbody>
+          {reports.length === 0 ? (
+            <tr>
+              <td className="muted">No reports — verdicts have held up.</td>
+            </tr>
+          ) : (
+            reports.map((r) => (
+              <tr key={r.id}>
+                <td>
+                  <span className="pill">{r.reportedVerdict}</span> {r.reason ?? "(no reason given)"}
+                </td>
+                <td className="muted">{new Date(r.createdAt).toLocaleString()}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
 
       <h2>Credentials</h2>
       <table>

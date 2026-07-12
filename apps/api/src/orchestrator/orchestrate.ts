@@ -67,6 +67,10 @@ export interface OrchestratorDeps {
   flowJobTimeoutMs?: number;
   /** Intent-aware judge (doc 05 §3); absent ⇒ 🔴 candidates stay 🔴. */
   inference?: JudgeProvider;
+  /** BYO per-project judge provider (doc 09 Phase 13); falls back to `inference`. */
+  buildProjectInference?: (projectId: string, settings: unknown) => Promise<JudgeProvider>;
+  /** Re-enqueue this run after a delay when the project is at its concurrency cap. */
+  deferOrchestration?: (runId: string, delayMs: number) => Promise<void>;
 }
 
 export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Promise<void> {
@@ -104,6 +108,19 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
 
   try {
     await store.updateRun(runId, { startedAt: new Date() });
+
+    // ── per-project concurrency cap (doc 09 Phase 13): don't let one project
+    // saturate the shared runner pool. At the cap, defer this run and retry.
+    const projSettings = ProjectSettingsSchema.parse(project.settings ?? {});
+    if (deps.deferOrchestration) {
+      const active = await store.countActiveRunsForProject(project.id);
+      if (active > projSettings.maxConcurrentRuns) {
+        logger.info({ runId, active, cap: projSettings.maxConcurrentRuns }, "project at concurrency cap — deferring");
+        await store.updateRun(runId, { state: "planning" });
+        await deps.deferOrchestration(runId, 20_000);
+        return;
+      }
+    }
 
     // ── staleness: redelivered/reordered webhooks can start runs for old pushes.
     // The PR's CURRENT head is authoritative — a run for any other sha is stale,
@@ -152,7 +169,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     const mergeBaseSha: string = cmp.merge_base_commit.sha;
 
     // ── diff-aware selection (doc 06 §4), recomputed on every push ──
-    const settings = ProjectSettingsSchema.parse(project.settings ?? {});
+    const settings = projSettings;
     const changedFiles = (cmp.files ?? []).flatMap((f) =>
       f.previous_filename ? [f.filename, f.previous_filename] : [f.filename],
     );
@@ -481,6 +498,10 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
       let confidence: number | null = null;
       let rationale: string | null = null;
       if (cmp2.verdict === "broken" && deps.inference) {
+        // BYO per-project judge model (doc 09 Phase 13) when configured
+        const judgeProvider = deps.buildProjectInference
+          ? await deps.buildProjectInference(project.id, settings).catch(() => deps.inference!)
+          : deps.inference;
         const correlation = diffCorrelation({
           coverage: coverageByFlow.get(o.plan.flowId) ?? null,
           spec: o.plan.spec,
@@ -492,7 +513,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
         if (injection) logger.warn({ flow: o.plan.flowId, injection }, "prompt-injection pattern in PR text");
         const judged = applyJudgeRules(
           await judgeDivergence(
-            deps.inference,
+            judgeProvider,
             {
               flowName: o.plan.flowName,
               spec: o.plan.spec,
@@ -566,6 +587,7 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
           selection.fanout,
           `base cache hit ${cacheHits}/${flowList.length} flows · head run ${headRunSecs}s`,
         ),
+        ...(deps.dashboardUrl ? { reportUrl: `${deps.dashboardUrl}/projects/${project.id}?run=${runId}#reports` } : {}),
       }),
     );
 
@@ -585,6 +607,10 @@ export async function orchestrateRun(deps: OrchestratorDeps, runId: string): Pro
     }
 
     await store.updateRun(runId, { state: "done", finishedAt: new Date() });
+    // usage metering (doc 09 Phase 13): 1 run + total runner-ms across head flows
+    const runnerMs = outcomes.reduce((sum, o) => sum + (o.head.perf?.flowTotalMs ?? 0), 0);
+    await store.recordUsage({ projectId: project.id, runId, kind: "run", amount: 1 }).catch(() => {});
+    await store.recordUsage({ projectId: project.id, runId, kind: "runner_ms", amount: runnerMs }).catch(() => {});
     logger.info({ runId, verdicts: kinds }, "run reported");
   } catch (err) {
     logger.error({ err, runId }, "orchestration errored");

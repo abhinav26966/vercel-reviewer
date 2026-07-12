@@ -28,6 +28,8 @@ const DOC_08_TABLES = [
   "session_states",
   "webhook_deliveries",
   "alerts",
+  "verdict_reports",
+  "usage_events",
 ];
 
 describe("db schema", () => {

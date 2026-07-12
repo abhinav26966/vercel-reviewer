@@ -400,3 +400,42 @@ export const alerts = pgTable("alerts", {
   acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
   ...timestamps,
 });
+
+/**
+ * "This verdict was wrong" reports (doc 09 Phase 13): the single most important
+ * quality signal — a developer telling us a verdict was a false positive.
+ * Feeds the weekly review + the platform false-positive rate metric.
+ */
+export const verdictReports = pgTable("verdict_reports", {
+  id: text("id").primaryKey(),
+  verdictId: text("verdict_id").references(() => verdicts.id),
+  projectId: text("project_id").references(() => projects.id),
+  runId: text("run_id").references(() => runs.id),
+  flowId: text("flow_id").references(() => flows.id),
+  /** the verdict as it was when reported (verdicts can be re-run) */
+  reportedVerdict: text("reported_verdict").notNull(),
+  reason: text("reason"),
+  reportedBy: text("reported_by"),
+  ...timestamps,
+});
+
+/**
+ * Usage metering (doc 09 Phase 13): billable/observable units per project —
+ * run count, runner-minutes, inference tokens. Append-only event log; the
+ * usage endpoint aggregates.
+ */
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").references(() => projects.id),
+    runId: text("run_id"),
+    /** 'run' | 'runner_ms' | 'inference_tokens' */
+    kind: text("kind").notNull(),
+    amount: integer("amount").notNull(),
+    /** inference model for token events */
+    model: text("model"),
+    ...timestamps,
+  },
+  (t) => [index("usage_events_project_idx").on(t.projectId, t.createdAt)],
+);

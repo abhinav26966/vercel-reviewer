@@ -24,6 +24,8 @@ export const ID_PREFIXES = {
   runFlowResult: "rfr",
   verdict: "vrd",
   alert: "alr",
+  verdictReport: "vrp",
+  usageEvent: "use",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
