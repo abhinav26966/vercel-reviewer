@@ -58,7 +58,7 @@ export async function orchestrateBaseRun(deps: OrchestratorDeps, runId: string):
     const bypassSecret = project.vercelBypassSecretRef
       ? await deps.resolveSecret(project.vercelBypassSecretRef)
       : null;
-    const timeoutMs = deps.flowJobTimeoutMs ?? 300_000;
+    const timeoutMs = deps.flowJobTimeoutMs ?? 600_000;
     const loginSpec = suite.find((f) => f.flowName.toLowerCase() === "login")?.official.spec ?? null;
 
     const bundleFor = async (flowName: string, spec: (typeof suite)[number]["official"]["spec"]) =>

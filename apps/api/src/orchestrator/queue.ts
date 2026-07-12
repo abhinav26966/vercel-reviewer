@@ -105,7 +105,12 @@ export function createQueues(redisUrl: string, logger: Logger): QueueBundle {
           const control: ControlJob = "kind" in data ? data : { kind: "run", runId: data.runId };
           await handler(control);
         },
-        { connection, concurrency: 2 },
+        // an orchestration awaits ALL its flow jobs inline, so a control job can
+        // legitimately run for many minutes (slow canvas/vision/payment flows on
+        // a small worker pool). Give it a long lock so BullMQ doesn't consider
+        // it stalled mid-run; the stuck-run sweeper (doc 06 §6) is the real
+        // backstop for genuine hangs.
+        { connection, concurrency: 2, lockDuration: 20 * 60_000, stalledInterval: 5 * 60_000 },
       );
       worker.on("failed", (job, err) => logger.error({ jobId: job?.id, err }, "orchestration job failed"));
       return worker;
