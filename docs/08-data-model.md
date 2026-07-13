@@ -178,6 +178,17 @@ CREATE TABLE alerts (
   kind text NOT NULL,                           -- 'base_broken'|'baseline_conflict'|'stuck_run'|...
   payload jsonb NOT NULL, acknowledged_at timestamptz
 );
+
+-- ═══ Phase 13: productionization ══════════════════════════════════════
+CREATE TABLE verdict_reports (                   -- "this verdict was wrong" (false-positive signal)
+  id text PRIMARY KEY, verdict_id text REFERENCES verdicts,
+  project_id text REFERENCES projects, run_id text REFERENCES runs, flow_id text REFERENCES flows,
+  reported_verdict text NOT NULL, reason text, reported_by text
+);
+CREATE TABLE usage_events (                       -- metering: 'run' | 'runner_ms' | 'inference_tokens'
+  id text PRIMARY KEY, project_id text REFERENCES projects, run_id text,
+  kind text NOT NULL, amount int NOT NULL, model text
+);
 ```
 
 ## Notes & invariants

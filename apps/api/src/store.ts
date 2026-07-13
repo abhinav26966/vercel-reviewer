@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@flowguard/db";
 import {
   alerts,
@@ -18,6 +18,8 @@ import {
   runs,
   secrets,
   sessionStates,
+  usageEvents,
+  verdictReports,
   verdicts,
   webhookDeliveries,
 } from "@flowguard/db";
@@ -155,6 +157,8 @@ export interface Store {
     },
   ): Promise<void>;
   getProjectById(projectId: string): Promise<ProjectRow | null>;
+  /** Shallow-merge a patch into projects.settings jsonb (Phase 13 settings). */
+  updateProjectSettings(projectId: string, patch: Record<string, unknown>): Promise<void>;
   getPullRequestById(prId: string): Promise<(PullRequestRow & { title: string | null }) | null>;
   getDeploymentById(deploymentId: string): Promise<DeploymentRow | null>;
   getLatestDeploymentForSha(projectId: string, sha: string): Promise<DeploymentRow | null>;
@@ -320,6 +324,40 @@ export interface Store {
   listFlows(
     projectId: string,
   ): Promise<Array<{ id: string; name: string; tier: string; archived: boolean }>>;
+
+  // ── Phase 13: reports, usage, metrics, concurrency, onboarding ───────────
+  /** "This verdict was wrong" — the false-positive signal (doc 09 Phase 13). */
+  createVerdictReport(input: {
+    verdictId: string;
+    reason: string | null;
+    reportedBy: string | null;
+  }): Promise<{ id: string } | null>;
+  listVerdictReports(
+    projectId: string,
+  ): Promise<Array<{ id: string; verdictId: string; flowId: string | null; reportedVerdict: string; reason: string | null; createdAt: Date }>>;
+  /** Append a usage event (run | runner_ms | inference_tokens). */
+  recordUsage(input: { projectId: string; runId?: string | null; kind: string; amount: number; model?: string | null }): Promise<void>;
+  /** Aggregate usage for a project since a cutoff. */
+  aggregateUsage(projectId: string, since: Date): Promise<{ runs: number; runnerMs: number; inferenceTokens: number }>;
+  /** Active (non-terminal) runs for a project — per-project concurrency (Phase 13). */
+  countActiveRunsForProject(projectId: string): Promise<number>;
+  /** Platform metrics (doc 09 Phase 13): verdict distribution, heal rate, FP rate, durations. */
+  platformMetrics(since: Date): Promise<{
+    verdictDistribution: Record<string, number>;
+    healAttempts: number;
+    healSucceeded: number;
+    verdictReports: number;
+    totalVerdicts: number;
+    runDurations: number[];
+  }>;
+  /** Onboarding checklist state for a project (doc 06 §1). */
+  onboardingStatus(projectId: string): Promise<{
+    githubInstalled: boolean;
+    vercelBound: boolean;
+    credentialsSet: boolean;
+    firstFlowRecorded: boolean;
+    firstRunCompleted: boolean;
+  }>;
 
   // ── recordings (Phase 5) ────────────────────────────────────────────────
   createRecording(input: {
@@ -717,6 +755,12 @@ export class DrizzleStore implements Store {
     return rows[0] ?? null;
   }
 
+  async updateProjectSettings(projectId: string, patch: Record<string, unknown>): Promise<void> {
+    const rows = await this.db.select({ settings: projects.settings }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    const merged = { ...((rows[0]?.settings as Record<string, unknown>) ?? {}), ...patch };
+    await this.db.update(projects).set({ settings: merged }).where(eq(projects.id, projectId));
+  }
+
   async getPullRequestById(prId: string) {
     const rows = await this.db.select().from(pullRequests).where(eq(pullRequests.id, prId)).limit(1);
     const r = rows[0];
@@ -930,6 +974,138 @@ export class DrizzleStore implements Store {
       .from(flows)
       .where(eq(flows.projectId, projectId))
       .orderBy(flows.name);
+  }
+
+  // ── Phase 13 ─────────────────────────────────────────────────────────────
+  async createVerdictReport(input: { verdictId: string; reason: string | null; reportedBy: string | null }) {
+    const rows = await this.db
+      .select({ id: verdicts.id, runId: verdicts.runId, flowId: verdicts.flowId, verdict: verdicts.verdict })
+      .from(verdicts)
+      .where(eq(verdicts.id, input.verdictId))
+      .limit(1);
+    const v = rows[0];
+    if (!v) return null;
+    // resolve projectId via the run
+    const run = v.runId ? await this.getRunById(v.runId) : null;
+    const id = newId("verdictReport");
+    await this.db.insert(verdictReports).values({
+      id,
+      verdictId: v.id,
+      projectId: run?.projectId ?? null,
+      runId: v.runId,
+      flowId: v.flowId,
+      reportedVerdict: v.verdict,
+      reason: input.reason,
+      reportedBy: input.reportedBy,
+    });
+    return { id };
+  }
+
+  async listVerdictReports(projectId: string) {
+    const rows = await this.db
+      .select({
+        id: verdictReports.id,
+        verdictId: verdictReports.verdictId,
+        flowId: verdictReports.flowId,
+        reportedVerdict: verdictReports.reportedVerdict,
+        reason: verdictReports.reason,
+        createdAt: verdictReports.createdAt,
+      })
+      .from(verdictReports)
+      .where(eq(verdictReports.projectId, projectId))
+      .orderBy(desc(verdictReports.createdAt));
+    return rows.map((r) => ({ ...r, verdictId: r.verdictId! }));
+  }
+
+  async recordUsage(input: { projectId: string; runId?: string | null; kind: string; amount: number; model?: string | null }) {
+    await this.db.insert(usageEvents).values({
+      id: newId("usageEvent"),
+      projectId: input.projectId,
+      runId: input.runId ?? null,
+      kind: input.kind,
+      amount: Math.round(input.amount),
+      model: input.model ?? null,
+    });
+  }
+
+  async aggregateUsage(projectId: string, since: Date) {
+    const rows = await this.db
+      .select({ kind: usageEvents.kind, total: sql<number>`sum(${usageEvents.amount})::int` })
+      .from(usageEvents)
+      .where(and(eq(usageEvents.projectId, projectId), sql`${usageEvents.createdAt} >= ${since}`))
+      .groupBy(usageEvents.kind);
+    const by = new Map(rows.map((r) => [r.kind, Number(r.total)]));
+    return {
+      runs: by.get("run") ?? 0,
+      runnerMs: by.get("runner_ms") ?? 0,
+      inferenceTokens: by.get("inference_tokens") ?? 0,
+    };
+  }
+
+  async countActiveRunsForProject(projectId: string): Promise<number> {
+    const active = ["awaiting_deployment", "planning", "resolving_base", "executing", "judging", "reporting"];
+    const rows = await this.db
+      .select({ n: count() })
+      .from(runs)
+      .where(and(eq(runs.projectId, projectId), inArray(runs.state, active)));
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async platformMetrics(since: Date) {
+    const vRows = await this.db
+      .select({ verdict: verdicts.verdict, n: count() })
+      .from(verdicts)
+      .where(sql`${verdicts.createdAt} >= ${since}`)
+      .groupBy(verdicts.verdict);
+    const verdictDistribution: Record<string, number> = {};
+    let totalVerdicts = 0;
+    for (const r of vRows) {
+      verdictDistribution[r.verdict] = Number(r.n);
+      totalVerdicts += Number(r.n);
+    }
+    const healRows = await this.db
+      .select({ result: runFlowResults.result })
+      .from(runFlowResults)
+      .where(and(eq(runFlowResults.target, "head"), sql`${runFlowResults.createdAt} >= ${since}`));
+    let healAttempts = 0;
+    let healSucceeded = 0;
+    for (const r of healRows) {
+      if (r.result.healAttempt?.attempted) healAttempts++;
+      if (r.result.healAttempt?.succeeded) healSucceeded++;
+    }
+    const reportRows = await this.db
+      .select({ n: count() })
+      .from(verdictReports)
+      .where(sql`${verdictReports.createdAt} >= ${since}`);
+    const runRows = await this.db
+      .select({ startedAt: runs.startedAt, finishedAt: runs.finishedAt })
+      .from(runs)
+      .where(and(eq(runs.state, "done"), sql`${runs.finishedAt} >= ${since}`));
+    const runDurations = runRows
+      .filter((r) => r.startedAt && r.finishedAt)
+      .map((r) => r.finishedAt!.getTime() - r.startedAt!.getTime());
+    return {
+      verdictDistribution,
+      healAttempts,
+      healSucceeded,
+      verdictReports: Number(reportRows[0]?.n ?? 0),
+      totalVerdicts,
+      runDurations,
+    };
+  }
+
+  async onboardingStatus(projectId: string) {
+    const project = await this.getProjectById(projectId);
+    const credRows = await this.db.select({ n: count() }).from(credentialSets).where(eq(credentialSets.projectId, projectId));
+    const flowRows = await this.db.select({ n: count() }).from(flows).where(eq(flows.projectId, projectId));
+    const runRows = await this.db.select({ n: count() }).from(runs).where(and(eq(runs.projectId, projectId), eq(runs.state, "done")));
+    return {
+      githubInstalled: Boolean(project?.installationId),
+      vercelBound: Boolean(project?.vercelProjectId && project?.vercelTokenRef),
+      credentialsSet: Number(credRows[0]?.n ?? 0) > 0,
+      firstFlowRecorded: Number(flowRows[0]?.n ?? 0) > 0,
+      firstRunCompleted: Number(runRows[0]?.n ?? 0) > 0,
+    };
   }
 
   async listBaseSuite(projectId: string, branch: string) {

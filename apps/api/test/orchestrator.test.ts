@@ -319,6 +319,34 @@ describe("orchestrateRun", () => {
     expect(h.store.runs[0]!.state).toBe("done");
   });
 
+  it("per-project concurrency cap: over the limit → deferred, not executed (Phase 13)", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    // 5 active runs already for the project; cap default is 4
+    for (let i = 0; i < 5; i++) {
+      h.store.runs.push({ id: `busy_${i}`, projectId: "prj_1", kind: "pr", state: "executing", prId: "pull_1", headSha: `s${i}`, headDeploymentId: "dep_head", branch: null });
+    }
+    const deferred: Array<{ runId: string; delayMs: number }> = [];
+    h.deps.deferOrchestration = async (runId, delayMs) => void deferred.push({ runId, delayMs });
+    await orchestrateRun(h.deps, "run_1");
+    expect(deferred).toEqual([{ runId: "run_1", delayMs: 20_000 }]);
+    expect(h.enqueued).toHaveLength(0);
+    expect(h.store.runs.find((r) => r.id === "run_1")!.state).toBe("planning");
+  });
+
+  it("records run + runner_ms usage on a completed run (Phase 13)", async () => {
+    const h = makeHarness({
+      headResults: { flw_rip: result("head", "passed") },
+      baseResults: { flw_rip: result("base", "passed") },
+    });
+    await orchestrateRun(h.deps, "run_1");
+    const kinds = h.store.usageRows.filter((u) => u.projectId === "prj_1").map((u) => u.kind);
+    expect(kinds).toContain("run");
+    expect(kinds).toContain("runner_ms");
+  });
+
   it("a run for a stale push (PR head moved) cancels itself without executing", async () => {
     const h = makeHarness({
       headResults: { flw_rip: result("head", "passed") },

@@ -31,6 +31,8 @@ export interface AppConfig {
   };
   /** Encrypts + stores a plaintext in the vault, returns the sec_* ref. */
   storeSecret?: (projectId: string, kind: string, plaintext: string) => Promise<string>;
+  /** Merge a patch into projects.settings jsonb (Phase 13 project settings). */
+  updateProjectSettings?: (projectId: string, patch: Record<string, unknown>) => Promise<void>;
   /** Recording bundle persistence (S3 put); absent in some tests. */
   recordings?: Pick<RecordingDeps, "putObject"> & {
     getObject?: (key: string) => Promise<Buffer>;
@@ -246,6 +248,97 @@ export function buildApp(config: AppConfig) {
   app.get("/api/projects/:id/flows", async (req) => {
     const { id } = req.params as { id: string };
     return store().listFlows(id);
+  });
+
+  // ── Phase 13: false-positive reports, usage, metrics, onboarding, settings ──
+  app.post("/api/verdicts/:id/report", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    let body: { reason?: string; reportedBy?: string } = {};
+    try {
+      if (req.body) body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    const report = await store().createVerdictReport({
+      verdictId: id,
+      reason: body.reason ?? null,
+      reportedBy: body.reportedBy ?? null,
+    });
+    if (!report) return reply.code(404).send({ error: "verdict not found" });
+    return reply.code(201).send({ ok: true, reportId: report.id });
+  });
+
+  app.get("/api/projects/:id/verdict-reports", async (req) => {
+    const { id } = req.params as { id: string };
+    return store().listVerdictReports(id);
+  });
+
+  app.get("/api/projects/:id/usage", async (req) => {
+    const { id } = req.params as { id: string };
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const usage = await store().aggregateUsage(id, since);
+    return { sinceDays: 30, ...usage, runnerMinutes: Math.round(usage.runnerMs / 60000) };
+  });
+
+  app.get("/api/projects/:id/onboarding", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const project = await store().getProjectById(id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const s = await store().onboardingStatus(id);
+    const steps = [
+      { key: "githubInstalled", label: "Install the GitHub App", done: s.githubInstalled },
+      { key: "vercelBound", label: "Bind the Vercel project (token + bypass)", done: s.vercelBound },
+      { key: "credentialsSet", label: "Add test-account credentials", done: s.credentialsSet },
+      { key: "firstFlowRecorded", label: "Record your first flow", done: s.firstFlowRecorded },
+      { key: "firstRunCompleted", label: "Get your first PR verdict", done: s.firstRunCompleted },
+    ];
+    return { complete: steps.every((x) => x.done), steps };
+  });
+
+  app.get("/api/metrics", async () => {
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const m = await store().platformMetrics(since);
+    const sorted = [...m.runDurations].sort((a, b) => a - b);
+    const pct = (p: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]! : 0);
+    return {
+      sinceDays: 7,
+      verdictDistribution: m.verdictDistribution,
+      totalVerdicts: m.totalVerdicts,
+      healRate: m.healAttempts > 0 ? m.healSucceeded / m.healAttempts : null,
+      falsePositiveRate: m.totalVerdicts > 0 ? m.verdictReports / m.totalVerdicts : 0,
+      falsePositiveReports: m.verdictReports,
+      runDurationMs: { count: sorted.length, p50: pct(0.5), p90: pct(0.9), p99: pct(0.99) },
+    };
+  });
+
+  // project inference settings (BYO key, doc 09 Phase 13). Key stored in the vault.
+  app.put("/api/projects/:id/inference", async (req, reply) => {
+    if (!config.storeSecret || !config.updateProjectSettings) {
+      return reply.code(500).send({ error: "inference settings not configured" });
+    }
+    const { id } = req.params as { id: string };
+    let body: { apiKey?: string; baseUrl?: string; analyzeModels?: string[]; groundingModels?: string[]; judgeModels?: string[]; clear?: boolean };
+    try {
+      body = JSON.parse(req.body as string) as typeof body;
+    } catch {
+      return reply.code(400).send({ error: "invalid JSON" });
+    }
+    if (body.clear) {
+      await config.updateProjectSettings(id, { inference: { keyRef: null, baseUrl: null, analyzeModels: [], groundingModels: [], judgeModels: [] } });
+      return { ok: true, cleared: true };
+    }
+    if (!body.apiKey) return reply.code(400).send({ error: "apiKey is required (or clear:true)" });
+    const keyRef = await config.storeSecret(id, "inference_key", body.apiKey);
+    await config.updateProjectSettings(id, {
+      inference: {
+        keyRef,
+        baseUrl: body.baseUrl ?? null,
+        analyzeModels: body.analyzeModels ?? [],
+        groundingModels: body.groundingModels ?? [],
+        judgeModels: body.judgeModels ?? [],
+      },
+    });
+    return reply.code(201).send({ ok: true });
   });
 
   // ── payments (doc 07 §6): consent gate + soft validation + PR overrides ──

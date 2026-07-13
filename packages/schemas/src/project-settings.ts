@@ -24,6 +24,25 @@ export const ProjectSettingsSchema = z.object({
   /** Optional Slack-compatible webhook for alerts (doc 05 §5.3). */
   alertWebhookUrl: z.string().nullable().default(null),
   artifactRetentionDays: z.number().int().positive().default(30),
+  /**
+   * Bring-your-own inference (doc 09 Phase 13): a project can supply its own
+   * model provider so vision/judge quality is its cost, not the platform's.
+   * `keyRef` is a `sec_*` vault reference (never plaintext); model chains
+   * override the platform defaults per capability. All optional — absent ⇒ the
+   * platform's default provider (free models) is used, so the product works
+   * with zero configuration.
+   */
+  inference: z
+    .object({
+      keyRef: z.string().nullable().default(null),
+      baseUrl: z.string().nullable().default(null),
+      analyzeModels: z.array(z.string()).default([]),
+      groundingModels: z.array(z.string()).default([]),
+      judgeModels: z.array(z.string()).default([]),
+    })
+    .prefault({}),
+  /** Max concurrent runs for this project (doc 09 Phase 13 rate limiting). */
+  maxConcurrentRuns: z.number().int().positive().default(4),
 });
 
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;

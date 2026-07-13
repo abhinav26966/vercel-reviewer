@@ -6,6 +6,34 @@ locally without them.
 
 ## Pending
 
+### Phase 13 — production infrastructure (deploy-time; scaffolded, not wired locally)
+
+The application logic is complete and tested; these are the ops resources for a
+real deployment. Code is scaffolded against named env vars so nothing here
+blocks local dev.
+
+- [ ] **Runner substrate (ephemeral machines).** The runner already honors the
+      one-job-one-process contract (each `executeFlow` launches its own browser).
+      To scale: run the BullMQ `runs` worker on Fly Machines / Fargate tasks,
+      one job per machine, autoscaled on queue depth. No code change — point the
+      worker image at the same Redis. Per-project concurrency is enforced in the
+      orchestrator (`settings.maxConcurrentRuns`).
+- [ ] **Org auth for the dashboard.** Dev uses a bearer token. For production add
+      GitHub OAuth or email magic-link and gate the API by org membership
+      (`orgs`/`users` tables already exist). Env: `AUTH_MODE`, OAuth client
+      id/secret.
+- [ ] **Error tracking (Sentry).** Set `SENTRY_DSN`; init in `apps/api` and
+      `apps/runner` boot. Metrics (queue depth, run duration p50/p90/p99, verdict
+      distribution, heal rate, false-positive rate) are already exposed at
+      `GET /api/metrics` — point a scraper/dashboard at it.
+- [ ] **Load test.** 20 concurrent PRs across 3 projects; the Phase-7 flake soak
+      (`apps/api/scripts/soak.ts`) must stay green on the production substrate.
+      This is the standing CI gate.
+- [ ] **Security pass sign-off.** Verify in staging: webhook replay is rejected
+      (idempotency ledger `webhook_deliveries`), presigned artifact URLs are
+      short-lived + HMAC-scoped, PR-scoped secret expiry purge runs
+      (`deleteExpiredPrCredentials`, daily cron).
+
 ### 7. Vercel access token (dashboard-only; unblocks Phase 3)
 
 - [ ] https://vercel.com/account/settings/tokens → **Create Token** (CLI minting is

@@ -14,6 +14,7 @@ import { loadEnv } from "./env.js";
 import { encryptSecret } from "@flowguard/shared";
 import { artifactLinkBuilder, signArtifactKey, verifyArtifactSig } from "./orchestrator/artifact-links.js";
 import { orchestrateRun, type OrchestratorDeps } from "./orchestrator/orchestrate.js";
+import { resolveProjectInference } from "./inference-resolver.js";
 import { orchestrateBaseRun } from "./orchestrator/base-run.js";
 import { nightlyBaseRuns, purgeExpired, startBaseRun, sweepStuckRuns } from "./orchestrator/scheduler.js";
 import { createQueues } from "./orchestrator/queue.js";
@@ -67,6 +68,10 @@ const orchestratorDeps: OrchestratorDeps = {
   artifactLink: artifactLinkBuilder(env.PUBLIC_API_URL, masterKey),
   dashboardUrl: env.PUBLIC_DASHBOARD_URL,
   inference,
+  // BYO per-project judge model (doc 09 Phase 13), else the platform provider
+  buildProjectInference: (projectId, settings) =>
+    resolveProjectInference({ projectId, settings, store, resolveSecret, platform: inference }),
+  deferOrchestration: (runId, delayMs) => queues.deferOrchestration(runId, delayMs),
 };
 
 const getRecordingObject = async (key: string): Promise<Buffer> => {
@@ -152,6 +157,7 @@ const app = buildApp({
       last4: kind === "password" ? null : plaintext.slice(-4),
     });
   },
+  updateProjectSettings: (projectId, patch) => store.updateProjectSettings(projectId, patch),
   startBaseRun: (projectId, branch) => startBaseRun(schedulerDeps, projectId, branch),
   deps: {
     store,

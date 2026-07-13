@@ -2,7 +2,50 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 12 — Canvas/WebGL + state SDK — ✅ core AC live-proven (2026-07-10). Merged (#19); fixes in PR #21.**
+## Current phase: **Phase 13 — Productionization — core built + live-verified (2026-07-12). PR #22 up. FINAL phase.**
+
+### Phase 13 state
+
+The application logic for productionization is complete, tested, and
+live-verified against the running api. Infra that needs external accounts
+(Fly/Fargate substrate, real OAuth, Sentry DSN, 20-PR load test) is scaffolded
+with a deploy-time checklist in SETUP.md.
+
+Built + tested (11 new tests; api 172, github 11, db 2, all gates green):
+- **BYO inference per project** (the founder's proposal, validated by the
+  Phase-12 probe that free vision models are unusable): encrypted key ref +
+  per-capability model chains in project settings; `resolveProjectInference`
+  builds a project provider for the judge, falling back to the platform
+  provider on a missing/broken key (never takes a project offline); per-project
+  token metering via the log sink. `PUT /projects/:id/inference`. The RUNNER's
+  vision/grounding still uses its env-configured Claude chain (what's funded);
+  runner-per-project BYO is a documented extension.
+- **"This verdict was wrong" reports (AC #3)** — `verdict_reports` table, `POST
+  /verdicts/:id/report`, list endpoint, a "Report it" link in every PR comment,
+  dashboard reports panel. **Live-verified**: reported a real broken verdict →
+  stored → listed. ✓
+- **Usage metering** — `usage_events` (run | runner_ms | inference_tokens);
+  recorded at run completion; `GET /projects/:id/usage`.
+- **Platform metrics** — `GET /api/metrics`: verdict distribution, heal rate,
+  false-positive rate, run-duration p50/p90/p99. **Live**: 90 verdicts, 33%
+  heal rate, p50 42s / p90 183s / p99 714s.
+- **Onboarding checklist (AC #1 support)** — `GET /projects/:id/onboarding`
+  (doc 06 §1 steps) + ONBOARDING.md quickstart + dashboard getting-started
+  panel. Live: demo project reports complete.
+- **Per-project concurrency cap** — `settings.maxConcurrentRuns` with deferred
+  re-enqueue (BullMQ delay); tested.
+
+### Phase 13 remaining (deploy-time, scaffolded in SETUP.md)
+- Runner substrate → Fly Machines/Fargate (one-job-one-process already honored;
+  point the worker image at the same Redis).
+- Org auth (GitHub OAuth / magic link; orgs+users tables exist).
+- Sentry (`SENTRY_DSN`; metrics already at `/api/metrics`).
+- Load test: 20 concurrent PRs on 3 projects; Phase-7 flake soak on prod
+  substrate (`scripts/soak.ts`) — the standing CI gate.
+- Security-pass sign-off in staging (webhook replay, presigned URL scoping,
+  secret purge — all implemented, need staging verification).
+
+### Phase 12 — ✅ core AC live-proven (2026-07-10). Merged (#19, #21).
 
 ### Phase 12 live results (real Claude vision via OpenROUTER credit)
 
