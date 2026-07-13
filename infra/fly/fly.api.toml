@@ -1,0 +1,45 @@
+# FlowGuard api + orchestrator (doc 01 §2). Deploy from the repo root:
+#   fly deploy -c infra/fly/fly.api.toml
+# Secrets (fly secrets set, never in this file): DATABASE_URL, REDIS_URL,
+# FLOWGUARD_MASTER_KEY, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_BASE64,
+# GITHUB_WEBHOOK_SECRET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
+# INFERENCE_API_KEY (+ optional INFERENCE_*_MODELS chains).
+app = "flowguard-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../../apps/api/Dockerfile"
+
+[deploy]
+  # migrations before the new version takes traffic (drizzle journal is idempotent)
+  release_command = "node /repo/packages/db/dist/migrate.js"
+
+[env]
+  PORT = "8787"
+  LOG_LEVEL = "info"
+  # set these to the real hosts after the first deploy:
+  PUBLIC_API_URL = "https://flowguard-api.fly.dev"
+  PUBLIC_DASHBOARD_URL = "https://flowguard-dashboard.vercel.app"
+  S3_REGION = "auto"
+  S3_ENDPOINT = "https://fly.storage.tigris.dev"
+  S3_BUCKET = "flowguard-artifacts"
+  S3_RECORDINGS_BUCKET = "flowguard-recordings"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  # webhooks must always land — never scale the api to zero
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

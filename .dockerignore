@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+.git
+.turbo
+**/.turbo
+**/.next
+**/test-results
+**/playwright-report
+**/*.env
+**/.env*
+artifacts
+docs
+examples
+apps/dashboard
+apps/extension

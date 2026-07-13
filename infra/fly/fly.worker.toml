@@ -1,0 +1,30 @@
+# FlowGuard runner worker (doc 01 §2: one process, one job). Deploy from repo root:
+#   fly deploy -c infra/fly/fly.worker.toml
+# Secrets: DATABASE_URL, REDIS_URL, FLOWGUARD_MASTER_KEY,
+# S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, INFERENCE_API_KEY (+ model chains).
+app = "flowguard-worker"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../../apps/runner/Dockerfile"
+
+[env]
+  LOG_LEVEL = "info"
+  S3_REGION = "auto"
+  S3_ENDPOINT = "https://fly.storage.tigris.dev"
+  S3_BUCKET = "flowguard-artifacts"
+
+# a flow run in progress gets up to 5 min to finish on shutdown/deploy
+kill_signal = "SIGINT"
+kill_timeout = 300
+
+# No [http_service] — this app only consumes the BullMQ `runs` queue.
+# Scale with `fly scale count N -a flowguard-worker`; per-project fairness is
+# enforced upstream by the orchestrator (settings.maxConcurrentRuns). For
+# queue-depth autoscaling later: https://github.com/superfly/fly-autoscaler
+# with metric = BullMQ waiting count.
+
+[[vm]]
+  # Playwright + Chromium want headroom; 2GB avoids OOM on heavy canvas pages
+  size = "shared-cpu-2x"
+  memory = "2048mb"

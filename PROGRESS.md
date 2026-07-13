@@ -2,7 +2,33 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Phase 13 — Productionization — core built + live-verified (2026-07-12). PR #22 up. FINAL phase.**
+## Current phase: **Build plan COMPLETE (PR #22 merged 2026-07-13). Now: production deployment.**
+
+### Deployment scaffolding (2026-07-13)
+
+Everything code-side for a Fly.io production deploy is built and smoke-tested;
+what remains is ~30 min of founder commands — the exact runbook is **DEPLOY.md**.
+
+- `apps/api/Dockerfile` (node:22-slim, workspace-aware `--filter @flowguard/api...`
+  build, `pnpm prune --prod`): **built + booted locally** — server starts, all
+  workspace modules resolve, 4 migration files present in-image.
+- `apps/runner/Dockerfile` **fixed**: it only built schemas/shared/runner but the
+  runner now depends on db + inference (added Phases 7/12) → image would have
+  crashed at import. Now builds via the dependency-graph filter.
+- `.dockerignore` (keeps `.env*`, node_modules, dist out of images).
+- `infra/fly/fly.api.toml` (always-on, /healthz check, migrations as
+  release_command) + `fly.worker.toml` (no http, 2GB for Playwright,
+  kill_timeout 300s for in-flight flows).
+- CI `deploy` job: push-to-main → deploy api then worker; **silent no-op until
+  the `FLY_API_TOKEN` repo secret exists** (gate step, since job-level `if`
+  can't read secrets). CI node bumped 20→22 to match the image.
+- Dashboard deploys to Vercel (root dir `apps/dashboard`,
+  `NEXT_PUBLIC_API_URL`) — DEPLOY.md §5.
+
+Founder actions (DEPLOY.md): fly apps/PG/Redis/Tigris, secrets (⚠️ same
+FLOWGUARD_MASTER_KEY on api+worker; new key = re-enter vault secrets), first
+deploy, repoint GitHub App webhook off smee, `gh secret set FLY_API_TOKEN`.
+Then the two remaining ACs: prod soak + stranger onboarding (DEPLOY.md §7).
 
 ### Phase 13 state
 
