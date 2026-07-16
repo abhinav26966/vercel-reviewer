@@ -7,6 +7,8 @@ with video proof — before merge.
 - **Docs:** [`docs/`](docs/) — start with [`docs/00-project-overview.md`](docs/00-project-overview.md)
 - **Build plan:** [`docs/09-build-plan.md`](docs/09-build-plan.md) · **Progress:** [`PROGRESS.md`](PROGRESS.md)
 - **External-resource checklist:** [`SETUP.md`](SETUP.md)
+- **Run your own, free:** [`SELF_HOSTING.md`](SELF_HOSTING.md) — the full stack on one machine, $0/month
+- **Use it on your app:** [`ONBOARDING.md`](ONBOARDING.md) · **Managed deploy (Fly.io):** [`DEPLOY.md`](DEPLOY.md)
 
 ## Layout
 

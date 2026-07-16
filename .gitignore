@@ -19,4 +19,6 @@ minio-data/
 postgres-data/
 .vercel
 .env*
+!.env.example
+!.env.production.example
 extension/test/.locators-bundle.js

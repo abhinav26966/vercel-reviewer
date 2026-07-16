@@ -1,0 +1,10 @@
+# TLS reverse proxy for the compose stack (profile: proxy).
+# Set API_DOMAIN / DASHBOARD_DOMAIN in .env.production; Caddy fetches
+# Let's Encrypt certs automatically once DNS points here.
+{$API_DOMAIN} {
+	reverse_proxy api:8787
+}
+
+{$DASHBOARD_DOMAIN} {
+	reverse_proxy dashboard:3000
+}
