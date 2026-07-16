@@ -1,5 +1,10 @@
 # DEPLOY.md — production deployment (Fly.io)
 
+> **Free alternative:** the whole stack also runs on a single free machine via
+> `docker-compose.prod.yml` — see **SELF_HOSTING.md** ($0/month on Oracle's
+> always-free tier). This file covers the managed Fly.io path (~$15–30/month,
+> less to operate, per-service scaling). Both use the same images.
+
 One-time setup the founder runs by hand; after this, every push to `main` that
 passes CI auto-deploys (`.github/workflows/ci.yml` → `deploy` job).
 

@@ -11,5 +11,4 @@
 artifacts
 docs
 examples
-apps/dashboard
-apps/extension
+extension
