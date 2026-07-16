@@ -2,7 +2,28 @@
 
 _Resume file for working sessions. Updated at the end of every session._
 
-## Current phase: **Build plan COMPLETE (PR #22 merged 2026-07-13). Now: production deployment.**
+## Current phase: **Build plan COMPLETE (PR #22 merged 2026-07-13). Now: free distribution + deployment.**
+
+### Free self-hosting kit (2026-07-16, PR #24)
+
+Founder decision: FlowGuard should be **free for everyone**. Model chosen: $0
+single-box hosting + self-host kit (GitHub-Action-lite mode deferred; someone
+must pay per-PR compute, so it lands on the user's machine + BYO inference key).
+
+- `docker-compose.prod.yml` — entire stack (api, worker, dashboard, PG, Redis,
+  MinIO, optional Caddy TLS profile) on one machine. **Verified end to end
+  locally**: fresh volumes → migrations applied, /healthz ok, /api/metrics
+  roundtrips PG, dashboard 200, worker listening.
+- `apps/dashboard/Dockerfile` (Next standalone; NEXT_PUBLIC_API_URL is a BUILD
+  arg — inlined at build time), `.env.production.example`, `infra/Caddyfile`,
+  `SELF_HOSTING.md` (Oracle always-free VM runbook, per-instance GitHub App
+  creation, free HTTPS, ops).
+- Founder to-dos before going public: pick a LICENSE (AGPL-3.0 vs Apache-2.0),
+  flip repo public, decide where the founder's own free instance runs (Oracle
+  signup is a human task). Fly path (DEPLOY.md) still valid as paid alternative;
+  PRs #23 (fly) and #24 (selfhost) both open.
+- Gotcha found: root `.gitignore` had a trailing `.env*` that re-ignored the
+  negated `.env.example` allowances — fixed with explicit `!` entries.
 
 ### Deployment scaffolding (2026-07-13)
 
