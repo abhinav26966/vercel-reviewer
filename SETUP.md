@@ -12,12 +12,14 @@ The application logic is complete and tested; these are the ops resources for a
 real deployment. Code is scaffolded against named env vars so nothing here
 blocks local dev.
 
-- [ ] **Runner substrate (ephemeral machines).** The runner already honors the
-      one-job-one-process contract (each `executeFlow` launches its own browser).
-      To scale: run the BullMQ `runs` worker on Fly Machines / Fargate tasks,
-      one job per machine, autoscaled on queue depth. No code change — point the
-      worker image at the same Redis. Per-project concurrency is enforced in the
-      orchestrator (`settings.maxConcurrentRuns`).
+- [ ] **Production deploy (Fly.io).** Fully scaffolded — Dockerfiles for api +
+      runner (both smoke-tested locally), `infra/fly/*.toml`, a CI deploy job
+      (no-op until `FLY_API_TOKEN` repo secret exists), and the step-by-step
+      runbook in **DEPLOY.md** (~30 min of founder commands: create apps,
+      provision PG/Redis/Tigris, set secrets, first deploy, repoint the GitHub
+      App webhook off smee). Per-project concurrency is enforced in the
+      orchestrator (`settings.maxConcurrentRuns`); scale workers with
+      `fly scale count`.
 - [ ] **Org auth for the dashboard.** Dev uses a bearer token. For production add
       GitHub OAuth or email magic-link and gate the API by org membership
       (`orgs`/`users` tables already exist). Env: `AUTH_MODE`, OAuth client
@@ -28,7 +30,7 @@ blocks local dev.
       `GET /api/metrics` — point a scraper/dashboard at it.
 - [ ] **Load test.** 20 concurrent PRs across 3 projects; the Phase-7 flake soak
       (`apps/api/scripts/soak.ts`) must stay green on the production substrate.
-      This is the standing CI gate.
+      This is the standing CI gate. Runbook: DEPLOY.md §7.
 - [ ] **Security pass sign-off.** Verify in staging: webhook replay is rejected
       (idempotency ledger `webhook_deliveries`), presigned artifact URLs are
       short-lived + HMAC-scoped, PR-scoped secret expiry purge runs

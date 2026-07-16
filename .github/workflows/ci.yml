@@ -13,7 +13,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @flowguard/runner exec playwright install --with-deps chromium
@@ -21,3 +21,26 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+
+  # Continuous deploy to Fly (doc 09 Phase 13). No-op until the founder adds the
+  # FLY_API_TOKEN repo secret (fly tokens create deploy); see DEPLOY.md.
+  deploy:
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency: deploy-production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when FLY_API_TOKEN is not configured
+        id: gate
+        run: echo "enabled=${{ secrets.FLY_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.gate.outputs.enabled == 'true'
+      - name: Deploy api (runs migrations via release_command)
+        if: steps.gate.outputs.enabled == 'true'
+        run: flyctl deploy --remote-only -c infra/fly/fly.api.toml
+      - name: Deploy runner worker
+        if: steps.gate.outputs.enabled == 'true'
+        run: flyctl deploy --remote-only -c infra/fly/fly.worker.toml
